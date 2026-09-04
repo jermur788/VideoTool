@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Media files
+*.mp4
+*.MP4
+*.mov
+*.MOV
+*.mkv
+*.MKV
+*.avi
+*.AVI
+*.webm
+*.WEBM
+*.m4v
+*.M4V
+
+# Environment & IDE
+.vscode/
+.idea/
+.DS_Store

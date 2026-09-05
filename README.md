@@ -85,7 +85,9 @@ Codec choice is based on Blackmagic's [Resolve 20 supported codec list](https://
 Linux tables on pages 11 and 14: DNxHR MOV and PCM are supported; H.264/H.265
 decode is Studio-only and AAC is unsupported. The published Linux table targets
 Rocky Linux/CUDA; actual import on your installation still requires a picture
-and sound check in Resolve. No Resolve import has been verified here.
+and sound check in Resolve. On 2026-09-05, the user confirmed that a file
+converted by VideoTool works in DaVinci Resolve. See [test results](TEST_RESULTS.md)
+for the recorded result and scope.
 FFmpeg option reference: [official documentation](https://ffmpeg.org/ffmpeg.html).
 
 YouTube and Gemini analysis derivatives remain future work.

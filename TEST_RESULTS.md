@@ -13,4 +13,13 @@ Summary:
 
 Notes:
 - Tests ran locally in the workspace and did not modify source files.
-- If you want these results recorded elsewhere (CI badge, GitHub Action run logs), I can add CI config next.
+
+## Manual DaVinci Resolve test
+
+Date reported: 2026-09-05
+
+Result: PASS — the user tested a file converted by VideoTool and confirmed
+that the converted file works in DaVinci Resolve.
+
+This is a user-reported result for the tested file. The filename, Resolve
+version, and separate picture/audio checks were not recorded.

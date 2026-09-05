@@ -157,6 +157,68 @@ class VideoToolTests(unittest.TestCase):
         with self.assertRaisesRegex(videotool.VideoToolError, "did not complete cleanly"):
             videotool.execute_davinci(self.source, self.folder / "other.mov", ["ffmpeg"])
 
+    @patch("videotool.inspect_video")
+    @patch("videotool.shutil.which", return_value="ffmpeg")
+    @patch("videotool.execute_davinci")
+    def test_batch_preview_selection_and_names(self, execute, which, inspect):
+        inspect.return_value = self.metadata()
+        for name in ('clip.MP4', 'clip.mov', 'old_davinci.mov', 'notes.txt'):
+            (self.folder / name).write_bytes(b'keep')
+        (self.folder / 'nested').mkdir()
+        (self.folder / 'nested' / 'hidden.mp4').write_bytes(b'keep')
+        (self.folder / 'alias.mp4').symlink_to(self.source)
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            self.assertEqual(videotool.main(['batch', str(self.folder)]), 0)
+        execute.assert_not_called()
+        self.assertEqual(inspect.call_count, 3)
+        self.assertIn('clip.MP4_davinci.mov', output.getvalue())
+        self.assertIn('clip.mov_davinci.mov', output.getvalue())
+        self.assertFalse((self.folder / 'clip.mov_davinci.mov').exists())
+
+    @patch("videotool.inspect_video")
+    @patch("videotool.shutil.which", return_value="ffmpeg")
+    @patch("videotool.execute_davinci")
+    def test_batch_failures_continue_and_existing_output_is_preserved(self, execute, which, inspect):
+        inspect.return_value = self.metadata()
+        for name in ('a.mp4', 'b.mp4'):
+            (self.folder / name).write_bytes(b'keep')
+        existing = self.folder / (self.source.name + '_davinci.mov')
+        existing.write_bytes(b'previous result')
+        execute.side_effect = [videotool.VideoToolError('failed conversion'), None]
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            self.assertEqual(videotool.main(['batch', str(self.folder), '--execute']), 1)
+        self.assertEqual(execute.call_count, 2)
+        self.assertEqual(existing.read_bytes(), b'previous result')
+        self.assertIn('1 succeeded, 2 failed, 0 not attempted', output.getvalue())
+
+    @patch("videotool.inspect_video")
+    @patch("videotool.shutil.which", return_value="ffmpeg")
+    @patch("videotool.execute_davinci")
+    def test_batch_interrupt_stops_and_output_folder(self, execute, which, inspect):
+        inspect.return_value = self.metadata()
+        (self.folder / 'second.mp4').write_bytes(b'keep')
+        destination = self.folder / 'outputs'
+        destination.mkdir()
+        error = videotool.VideoToolError('interrupted')
+        error.__cause__ = KeyboardInterrupt()
+        execute.side_effect = error
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            self.assertEqual(videotool.main(['batch', str(self.folder), '--output-dir',
+                                            str(destination), '--execute']), 130)
+        self.assertEqual(execute.call_count, 1)
+        self.assertEqual(execute.call_args.args[1].parent, destination)
+        self.assertIn('0 succeeded, 1 failed, 1 not attempted', output.getvalue())
+
+    def test_batch_invalid_and_empty_folders(self):
+        empty = self.folder / 'empty'
+        empty.mkdir()
+        for folder in (empty, self.source, self.folder / 'missing'):
+            with self.subTest(folder=folder), contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(videotool.main(['batch', str(folder)]), 1)
+
     @unittest.skipUnless(shutil.which('ffmpeg') and shutil.which('ffprobe'), 'FFmpeg required')
     def test_synthetic_conversion_and_ffmpeg_overwrite_refusal(self):
         # Only generated test media in the temporary test directory is processed.

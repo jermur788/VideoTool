@@ -190,6 +190,64 @@ def execute_davinci(source, output, command):
     print(f"Created: {output}\nNext: check picture and sound in DaVinci Resolve.")
 
 
+VIDEO_EXTENSIONS = {'.mp4', '.mov', '.mkv', '.avi', '.m4v', '.mts', '.m2ts', '.webm', '.mpg', '.mpeg', '.mxf'}
+
+
+def batch_davinci(folder, output_dir=None, execute=False):
+    """Preview all candidates before sequential conversion; never overwrite."""
+    try:
+        folder = Path(folder).expanduser().resolve(strict=True)
+        destination = Path(output_dir).expanduser().resolve(strict=True) if output_dir else folder
+        if not folder.is_dir() or not destination.is_dir():
+            raise VideoToolError('Source and output must be existing folders.')
+        sources = sorted((p for p in folder.iterdir()
+                          if p.is_file() and not p.is_symlink()
+                          and p.suffix.lower() in VIDEO_EXTENSIONS
+                          and not p.name.lower().endswith('_davinci.mov')),
+                         key=lambda p: p.name)
+    except (OSError, RuntimeError) as exc:
+        raise VideoToolError(f'Cannot read batch folder: {exc}') from exc
+    if not sources:
+        raise VideoToolError('No matching video files found in this folder (subfolders are not scanned).')
+    plans = []
+    failed = 0
+    for index, source in enumerate(sources, 1):
+        print(f'\nPlanning [{index}/{len(sources)}]: {source.name}', flush=True)
+        # Include the original extension so clip.mp4 and clip.mov cannot collide.
+        output = destination / (source.name + '_davinci.mov')
+        try:
+            validate_output(source, output)
+            metadata = inspect_video(source)
+            command = plan_davinci(source, output, metadata)
+            print_plan(source, output, metadata, command)
+            plans.append((source, output, command))
+        except VideoToolError as exc:
+            failed += 1
+            print(f'FAILED: {source.name}: {exc}', flush=True)
+    print(f'\nBatch preview: {len(plans)} ready, {failed} failed.')
+    if not execute:
+        print('Preview only: no output created. Review before rerunning with --execute.')
+        return 1 if failed else 0
+    completed = 0
+    interrupted = False
+    attempted = 0
+    for index, (source, output, command) in enumerate(plans, 1):
+        print(f'\nConverting [{index}/{len(plans)}]: {source.name}', flush=True)
+        attempted += 1
+        try:
+            execute_davinci(source, output, command)
+            completed += 1
+        except (VideoToolError, KeyboardInterrupt) as exc:
+            failed += 1
+            print(f'FAILED: {source.name}: {exc}', flush=True)
+            if isinstance(exc, KeyboardInterrupt) or isinstance(exc.__cause__, KeyboardInterrupt):
+                interrupted = True
+                break
+    print(f'\nBatch results: {completed} succeeded, {failed} failed, '
+          f'{len(plans) - attempted} not attempted.')
+    return 130 if interrupted else (1 if failed else 0)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -201,8 +259,14 @@ def main(argv=None):
     davinci.add_argument("--output", help="New .mov path (default: SOURCE_davinci.mov beside source)")
     davinci.add_argument("--execute", action="store_true",
                          help="Confirm the reviewed plan and actually create the output")
+    batch = commands.add_parser('batch', help='Preview DaVinci conversions for videos in a folder')
+    batch.add_argument('source', help='Folder to scan (no subfolders)')
+    batch.add_argument('--output-dir', help='Existing output folder (default: source folder)')
+    batch.add_argument('--execute', action='store_true', help='Confirm and convert all ready files')
     args = parser.parse_args(argv)
     try:
+        if args.command == 'batch':
+            return batch_davinci(args.source, args.output_dir, args.execute)
         source = validate_source(args.source)
         metadata = inspect_video(source)
         if args.command == "davinci":

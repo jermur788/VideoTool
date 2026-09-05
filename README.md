@@ -92,6 +92,37 @@ FFmpeg option reference: [official documentation](https://ffmpeg.org/ffmpeg.html
 
 YouTube and Gemini analysis derivatives remain future work.
 
+## Convert a folder
+
+Preview videos directly inside a folder:
+
+```bash
+python3 videotool.py batch "/full/path/to/footage"
+```
+
+After reviewing the plan, convert the ready files:
+
+```bash
+python3 videotool.py batch "/full/path/to/footage" --execute
+```
+
+Use `--output-dir "/full/path/to/exports"` with either command to select an
+existing destination folder. By default, outputs are beside the sources.
+Names include the original extension: `clip.mp4` becomes `clip.mp4_davinci.mov`,
+so files with the same stem and different extensions have separate outputs.
+
+The scan includes MP4, MOV, MKV, AVI, M4V, MTS, M2TS, WEBM, MPG, MPEG, and MXF
+(case-insensitive). Subfolders, symbolic links, and names ending in
+`_davinci.mov` are excluded. Each candidate is inspected before conversion.
+Existing outputs are reported as failures and preserved; other ready files
+continue. A failed or partial output is never deleted automatically.
+
+Conversions run one at a time, with a file counter and final success/failure
+counts. Ctrl+C during conversion stops the batch; remaining files are reported
+as not attempted. Exit status is 0 for success, 1 for any failure, or 130 for
+an interrupted conversion. Progress is per file, not a percentage within a file.
+Allow ample disk space for the much larger DNxHR outputs.
+
 ## Check the code
 
 Tests use temporary dummy files, simulated ffprobe responses, and a tiny generated

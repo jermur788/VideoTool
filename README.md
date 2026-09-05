@@ -1,7 +1,55 @@
 # VideoTool
 
 A small local Python command-line tool for inspecting videos and creating
-DaVinci editing intermediates with FFmpeg. Source files are retained.
+DaVinci editing intermediates with FFmpeg, with an optional desktop window.
+Source files are retained.
+
+## Desktop window
+
+On Linux Mint/Ubuntu, install the window library once:
+
+```bash
+sudo apt install python3-tk
+```
+
+Open the interface from the VideoTool folder:
+
+```bash
+python3 videotool_gui.py
+```
+
+1. Choose a video or a folder. Folder mode uses the same scan rules as the batch command.
+2. Optionally choose an existing output folder; otherwise copies go beside the originals.
+3. Optionally enter a **Location name**, such as `Dublin`, for names like
+   `Dublin_001.mov`, `Dublin_002.mov`. Leave it blank to keep the default names.
+4. Click **Preview**. Select a row to see the full source/output paths, format, or error.
+5. Review the ready files and click **Convert ready files** to confirm and start.
+
+Location numbering starts at 001 in source filename sort order. Blocked or failed
+files retain their assigned numbers. Changing the location requires a new preview.
+Existing numbered outputs for that location are excluded from the folder scan;
+existing target files are still blocked, never overwritten. Use a separate output
+folder when working with exports from several locations. Spaces and accented
+letters are supported; path separators and special filename characters are refused.
+
+The window stays responsive while inspecting or converting. It shows each file's
+status and a final results summary. **Stop after current file** lets the active
+conversion finish, then leaves the remaining files unprocessed. Close the window
+after work finishes.
+
+Only files captured in the preview are converted. Changing the selection requires
+a new preview, and sources changed since inspection are refused. Existing outputs
+are preserved and shown as blocked. Conversion failures do not stop other ready files.
+Two progress bars show the current file and the whole batch, with estimated time
+remaining based on measured conversion speed. Batch progress is weighted by video
+duration across ready files. Estimates appear after initial progress and can change
+with clip resolution, codec, or system load. If duration metadata is unavailable,
+the corresponding percentage and estimate are unavailable. A file reaches 100%
+only after FFmpeg finishes successfully; failures remain visible in the results.
+Single-file names use `clip_davinci.mov`; folder mode uses `clip.mp4_davinci.mov`.
+
+Python 3.10+, FFmpeg/ffprobe, Tkinter, and a graphical desktop are required.
+The command-line tool still works without Tkinter.
 
 ## Run it in VS Code
 

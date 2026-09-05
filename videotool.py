@@ -8,6 +8,7 @@ import shutil
 import shlex
 import subprocess
 import sys
+import tempfile
 
 
 class VideoToolError(Exception):
@@ -170,13 +171,45 @@ def print_plan(source, output, metadata, command):
     print("\nFFmpeg command:\n" + shlex.join(command), flush=True)
 
 
-def execute_davinci(source, output, command):
+def run_with_progress(command, progress):
+    """Drain FFmpeg's machine-readable progress while keeping errors off that pipe."""
+    with tempfile.TemporaryFile(mode='w+', encoding='utf-8', errors='replace') as errors:
+        with subprocess.Popen(command[:1] + ['-progress', 'pipe:1', '-nostats'] + command[1:],
+                              stdout=subprocess.PIPE, stderr=errors, text=True,
+                              encoding='utf-8', errors='replace') as process:
+            try:
+                for line in process.stdout:
+                    key, _, value = line.strip().partition('=')
+                    if key == 'out_time_us':
+                        try:
+                            seconds = float(value) / 1_000_000
+                        except ValueError:
+                            continue
+                        if math.isfinite(seconds):
+                            progress(max(0, seconds))
+                code = process.wait()
+            except BaseException:
+                process.terminate()
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait()
+                raise
+        errors.seek(0)
+        return subprocess.CompletedProcess(command, code, stderr=errors.read())
+
+
+def execute_davinci(source, output, command, progress=None):
     # Recheck immediately before launch; -n also refuses an output created since planning.
     validate_output(source, output)
     print("Converting; FFmpeg errors will be shown when it finishes.", flush=True)
     try:
-        result = subprocess.run(command, check=False, stderr=subprocess.PIPE,
-                                text=True, encoding="utf-8", errors="replace")
+        if progress is None:
+            result = subprocess.run(command, check=False, stderr=subprocess.PIPE,
+                                    text=True, encoding="utf-8", errors="replace")
+        else:
+            result = run_with_progress(command, progress)
     except OSError as exc:
         raise VideoToolError(f"Could not run FFmpeg: {exc}") from exc
     except KeyboardInterrupt as exc:
@@ -193,8 +226,8 @@ def execute_davinci(source, output, command):
 VIDEO_EXTENSIONS = {'.mp4', '.mov', '.mkv', '.avi', '.m4v', '.mts', '.m2ts', '.webm', '.mpg', '.mpeg', '.mxf'}
 
 
-def batch_davinci(folder, output_dir=None, execute=False):
-    """Preview all candidates before sequential conversion; never overwrite."""
+def discover_batch(folder, output_dir=None):
+    """Return a stable list of candidates and an existing destination folder."""
     try:
         folder = Path(folder).expanduser().resolve(strict=True)
         destination = Path(output_dir).expanduser().resolve(strict=True) if output_dir else folder
@@ -209,6 +242,12 @@ def batch_davinci(folder, output_dir=None, execute=False):
         raise VideoToolError(f'Cannot read batch folder: {exc}') from exc
     if not sources:
         raise VideoToolError('No matching video files found in this folder (subfolders are not scanned).')
+    return sources, destination
+
+
+def batch_davinci(folder, output_dir=None, execute=False):
+    """Preview all candidates before sequential conversion; never overwrite."""
+    sources, destination = discover_batch(folder, output_dir)
     plans = []
     failed = 0
     for index, source in enumerate(sources, 1):

@@ -5,6 +5,7 @@ from pathlib import Path
 import subprocess
 import shutil
 import tempfile
+import threading
 import unittest
 from unittest.mock import patch
 
@@ -169,6 +170,30 @@ class VideoToolTests(unittest.TestCase):
         run.assert_not_called()
         self.assertFalse(self.source.with_name("source clip_davinci.mov").exists())
 
+    @patch('videotool.inspect_video')
+    @patch('videotool.shutil.which', return_value='ffmpeg')
+    @patch('videotool.execute_davinci')
+    def test_cli_execution_writes_processing_receipt(self, execute, which, inspect):
+        source_metadata = self.metadata()
+        source_metadata['format'] = {'duration': '10', 'size': '1000'}
+        output_metadata = {'format': {'duration': '10', 'size': '2000'}, 'streams': [
+            {'index': 0, 'codec_type': 'video', 'codec_name': 'dnxhd',
+             'profile': 'DNXHR SQ', 'pix_fmt': 'yuv422p', 'width': 3840,
+             'height': 2160, 'avg_frame_rate': '25/1'}]}
+        inspect.side_effect = [source_metadata, output_metadata]
+        output = self.folder / 'cli.mov'
+        execute.side_effect = lambda source, target, command, **kwargs: target.write_bytes(b'output')
+        with patch('processing_receipts.ffmpeg_version', return_value='ffmpeg test version'), \
+                contextlib.redirect_stdout(io.StringIO()):
+            result = videotool.main(['davinci', str(self.source), '--output', str(output), '--execute'])
+        self.assertEqual(result, 0)
+        receipts = list(self.folder.glob('VideoTool-processing-*.md'))
+        self.assertEqual(len(receipts), 1)
+        text = receipts[0].read_text(encoding='utf-8')
+        self.assertIn('Batch elapsed time:', text)
+        self.assertIn('FFmpeg: ffmpeg test version', text)
+        self.assertIn(str(output), text)
+
     @patch("videotool.subprocess.run")
     def test_execution_rechecks_and_reports_failure(self, run):
         output = self.folder / "new.mov"
@@ -183,6 +208,36 @@ class VideoToolTests(unittest.TestCase):
         run.return_value = subprocess.CompletedProcess([], 0, stderr='File already exists. Exiting.')
         with self.assertRaisesRegex(videotool.VideoToolError, "did not complete cleanly"):
             videotool.execute_davinci(self.source, self.folder / "other.mov", ["ffmpeg"])
+
+    def test_progress_runner_terminates_active_process_on_cancel(self):
+        class Process:
+            def __init__(self):
+                self.stdout = iter(())
+                self.terminated = threading.Event()
+                self.killed = False
+            def __enter__(self):
+                return self
+            def __exit__(self, *args):
+                return False
+            def poll(self):
+                return 255 if self.terminated.is_set() else None
+            def terminate(self):
+                self.terminated.set()
+            def kill(self):
+                self.killed = True
+                self.terminated.set()
+            def wait(self, timeout=None):
+                if not self.terminated.wait(timeout or 2):
+                    raise subprocess.TimeoutExpired('ffmpeg', timeout)
+                return 255
+        process = Process()
+        cancel = threading.Event()
+        cancel.set()
+        with patch('videotool.subprocess.Popen', return_value=process):
+            with self.assertRaisesRegex(videotool.ConversionCancelled, 'partial output'):
+                videotool.run_with_progress(['ffmpeg'], lambda _: None, cancel)
+        self.assertTrue(process.terminated.is_set())
+        self.assertFalse(process.killed)
 
     @patch("videotool.inspect_video")
     @patch("videotool.shutil.which", return_value="ffmpeg")

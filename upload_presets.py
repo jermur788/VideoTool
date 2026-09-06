@@ -1,5 +1,5 @@
 """Local MP4 preparation for manual upload; no network or account integration."""
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from fractions import Fraction
 import math
 from pathlib import Path
@@ -23,6 +23,7 @@ class UploadPlan:
     width: int
     height: int
     audio: bool
+    executed_commands: list = field(default_factory=list)
 
 
 def size_target(value):
@@ -141,12 +142,14 @@ def plan(source, output, metadata, preset, target_mb=380):
                       target_width, target_height, audio is not None)
 
 
-def execute(plan, progress):
+def execute(plan, progress, cancel=None):
     videotool.validate_output(plan.source, plan.output)
     before = plan.source.stat()
+    plan.executed_commands.clear()
     def run(command, index, passes):
+        plan.executed_commands.append(videotool.command_with_progress(command))
         result = videotool.run_with_progress(command, lambda seconds: progress(
-            (index * plan.duration + min(seconds, plan.duration)) / passes))
+            (index * plan.duration + min(seconds, plan.duration)) / passes), cancel)
         if result.returncode or result.stderr:
             raise videotool.VideoToolError(f'Upload preparation failed: {(result.stderr or "FFmpeg failed").strip()}. '
                                           f'A partial output may remain at {plan.output}; it is preserved.')
@@ -154,6 +157,9 @@ def execute(plan, progress):
         if plan.first_pass:
             log = str(Path(temp) / 'encode')
             run(plan.first_pass + ['-pass', '1', '-passlogfile', log, '-an', '-f', 'null', '-'], 0, 2)
+            if cancel is not None and cancel.is_set():
+                raise videotool.ConversionCancelled(
+                    'Conversion cancelled after the first pass. No second pass was started.')
             videotool.validate_output(plan.source, plan.output)
             run(plan.command[:-1] + ['-pass', '2', '-passlogfile', log, str(plan.output)], 1, 2)
         else:

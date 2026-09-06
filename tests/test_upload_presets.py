@@ -101,7 +101,7 @@ class UploadTests(unittest.TestCase):
         with patch('videotool.inspect_video', return_value=metadata):
             item = gui.plan_item(self.source, self.folder / 'result.mp4', preset='aistudio', target_mb=1)
         self.assertFalse(item.error)
-        def run(command, callback):
+        def run(command, callback, cancel=None):
             if command[-1] != '-':
                 Path(command[-1]).write_bytes(b'x' * 1_000_001)
             callback(1)
@@ -117,7 +117,7 @@ class UploadTests(unittest.TestCase):
 
     def test_existing_output_and_creation_between_passes_refused(self):
         result = self.plan()
-        def first(command, callback):
+        def first(command, callback, cancel=None):
             result.output.write_bytes(b'created elsewhere')
             return subprocess.CompletedProcess(command, 0, stderr='')
         with patch('videotool.run_with_progress', side_effect=first) as run:
@@ -125,6 +125,19 @@ class UploadTests(unittest.TestCase):
                 upload.execute(result, lambda _: None)
         self.assertEqual(run.call_count, 1)
         self.assertEqual(result.output.read_bytes(), b'created elsewhere')
+
+    def test_cancel_between_ai_passes_does_not_start_second_pass(self):
+        result = self.plan()
+        cancel = threading.Event()
+        def first(command, callback, cancel_event=None):
+            self.assertIs(cancel_event, cancel)
+            cancel.set()
+            return subprocess.CompletedProcess(command, 0, stderr='')
+        with patch('videotool.run_with_progress', side_effect=first) as run:
+            with self.assertRaisesRegex(videotool.ConversionCancelled, 'No second pass'):
+                upload.execute(result, lambda _: None, cancel)
+        self.assertEqual(run.call_count, 1)
+        self.assertFalse(result.output.exists())
 
     def test_upload_folder_accepts_davinci_intermediates_and_retry_keeps_preset(self):
         with patch('videotool.inspect_video', return_value=self.metadata):

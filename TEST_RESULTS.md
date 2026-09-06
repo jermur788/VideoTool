@@ -1,5 +1,46 @@
 Test results — VideoTool
 
+## Simplified desktop interface — 2026-09-06
+
+- All 65 automated tests passed with the real desktop-display checks enabled.
+- The initial window hides advanced DaVinci reference settings, empty details,
+  progress, retry, receipt, and output controls until they apply. Preset-specific
+  controls are shown only for the selected workflow.
+- The review table now verifies and displays source size, duration, detected bit
+  depth, output name, and color-coded status. Location naming shows guidance when
+  empty and a live numbered example after a name is entered.
+- One **Choose source** menu handles video and folder selection. Native TkDND was
+  installed and the desktop test verifies the registered drop binding and source
+  selection callback.
+- Only temporary generated or simulated media was processed. User footage was
+  not converted, changed, or removed.
+
+## Processing receipts and measured timing — 2026-09-06
+
+- All 64 automated tests passed, including the opt-in desktop-display checks.
+- Successful GUI and CLI runs create a collision-safe Markdown receipt beside
+  outputs. Tests cover source/output technical details, exact FFmpeg commands,
+  FFmpeg version, per-file and batch timing, effective realtime speed, preset
+  details, validation wording, batch counts, SQLite timing fields, and receipt
+  recovery after reopening.
+- The desktop test opens the latest receipt and copies the run summary through
+  the new controls. Receipt-write failure is reported without changing a valid
+  video conversion into a failure.
+- Only temporary generated or simulated media was processed. User footage was
+  not converted, changed, or removed.
+
+## Cancel current conversion — 2026-09-06
+
+- All 61 automated tests passed with the opt-in desktop-display checks enabled.
+- The new **Cancel current conversion** control terminates active FFmpeg work and
+  stops the batch before another file starts. **Stop after current file** retains
+  its earlier behavior and lets the active conversion finish.
+- Tests verify process termination, interrupted/unfinished accounting, retained
+  partial output, no successful history record, no next-file start, AI two-pass
+  cancellation before pass two, hover help, and the complete desktop interaction.
+- Only temporary generated or simulated media was used. User footage was not
+  converted, changed, or removed.
+
 ## Automatic source-depth format and storage planning — 2026-09-06
 
 - All 57 automated tests passed with the opt-in desktop-display checks enabled.

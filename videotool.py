@@ -10,10 +10,18 @@ import shlex
 import subprocess
 import sys
 import tempfile
+import threading
+import time
+
+import processing_receipts
 
 
 class VideoToolError(Exception):
     """An expected input or dependency error, suitable for display to the user."""
+
+
+class ConversionCancelled(VideoToolError):
+    """The user terminated an active conversion; partial output stays in place."""
 
 
 def validate_source(value):
@@ -337,12 +345,30 @@ def print_plan(source, output, metadata, command, settings=None):
     print("\nFFmpeg command:\n" + shlex.join(command), flush=True)
 
 
-def run_with_progress(command, progress):
-    """Drain FFmpeg's machine-readable progress while keeping errors off that pipe."""
+def command_with_progress(command):
+    """Return the exact FFmpeg invocation used by the progress runner."""
+    return command[:1] + ['-progress', 'pipe:1', '-nostats'] + command[1:]
+
+
+def run_with_progress(command, progress, cancel=None):
+    """Drain FFmpeg progress and terminate it when the optional cancel event is set."""
     with tempfile.TemporaryFile(mode='w+', encoding='utf-8', errors='replace') as errors:
-        with subprocess.Popen(command[:1] + ['-progress', 'pipe:1', '-nostats'] + command[1:],
+        with subprocess.Popen(command_with_progress(command),
                               stdout=subprocess.PIPE, stderr=errors, text=True,
                               encoding='utf-8', errors='replace') as process:
+            finished = threading.Event()
+            terminated = threading.Event()
+            def watch_cancel():
+                while not finished.wait(0.05):
+                    if cancel is not None and cancel.is_set() and process.poll() is None:
+                        try:
+                            process.terminate()
+                        except OSError:
+                            return
+                        terminated.set()
+                        return
+            watcher = threading.Thread(target=watch_cancel, daemon=True)
+            watcher.start()
             try:
                 for line in process.stdout:
                     key, _, value = line.strip().partition('=')
@@ -362,11 +388,17 @@ def run_with_progress(command, progress):
                     process.kill()
                     process.wait()
                 raise
+            finally:
+                finished.set()
+                watcher.join(timeout=1)
         errors.seek(0)
-        return subprocess.CompletedProcess(command, code, stderr=errors.read())
+        detail = errors.read()
+        if terminated.is_set():
+            raise ConversionCancelled('Conversion cancelled. Any partial output is preserved and will not be overwritten.')
+        return subprocess.CompletedProcess(command, code, stderr=detail)
 
 
-def execute_davinci(source, output, command, progress=None, estimated_bytes=None):
+def execute_davinci(source, output, command, progress=None, estimated_bytes=None, cancel=None):
     # Recheck immediately before launch; -n also refuses an output created since planning.
     validate_output(source, output)
     require_space(output, estimated_bytes)
@@ -376,7 +408,7 @@ def execute_davinci(source, output, command, progress=None, estimated_bytes=None
             result = subprocess.run(command, check=False, stderr=subprocess.PIPE,
                                     text=True, encoding="utf-8", errors="replace")
         else:
-            result = run_with_progress(command, progress)
+            result = run_with_progress(command, progress, cancel)
     except OSError as exc:
         raise VideoToolError(f"Could not run FFmpeg: {exc}") from exc
     except KeyboardInterrupt as exc:
@@ -417,45 +449,84 @@ def batch_davinci(folder, output_dir=None, execute=False, reference=None):
     sources, destination = discover_batch(folder, output_dir)
     reference_settings = davinci_settings_from_reference(reference) if reference else None
     plans = []
+    records = []
     failed = 0
     for index, source in enumerate(sources, 1):
         print(f'\nPlanning [{index}/{len(sources)}]: {source.name}', flush=True)
         # Include the original extension so clip.mp4 and clip.mov cannot collide.
         output = destination / (source.name + '_davinci.mov')
+        record = processing_receipts.Record(source, output)
+        records.append(record)
         try:
             validate_output(source, output)
             metadata = inspect_video(source)
             settings = reference_settings or davinci_settings_for_source(metadata)
             command = plan_davinci(source, output, metadata, settings)
+            record.command = command
+            record.source_metadata = metadata
+            record.duration = duration_value(metadata) or 0
+            record.davinci_settings = settings
             print_plan(source, output, metadata, command, settings)
-            plans.append((source, output, command, estimate_davinci_size(metadata, settings)))
+            plans.append((record, estimate_davinci_size(metadata, settings)))
         except VideoToolError as exc:
             failed += 1
+            record.outcome = 'Failed'
+            record.error = str(exc)
             print(f'FAILED: {source.name}: {exc}', flush=True)
     print(f'\nBatch preview: {len(plans)} ready, {failed} failed.')
-    estimates = [plan[3] for plan in plans]
+    estimates = [plan[1] for plan in plans]
     total_estimate = sum(estimates) if all(value is not None for value in estimates) else None
     if plans:
         print(f'Estimated batch output: {readable_size(total_estimate)}; '
-              f'available: {readable_size(available_space(plans[0][1]))}.')
+              f'available: {readable_size(available_space(plans[0][0].output))}.')
     if not execute:
         print('Preview only: no output created. Review before rerunning with --execute.')
         return 1 if failed else 0
     completed = 0
     interrupted = False
     attempted = 0
-    for index, (source, output, command, estimated_bytes) in enumerate(plans, 1):
+    batch_start = time.monotonic()
+    for index, (record, estimated_bytes) in enumerate(plans, 1):
+        source, output, command = record.source, record.output, record.command
         print(f'\nConverting [{index}/{len(plans)}]: {source.name}', flush=True)
         attempted += 1
+        record.attempted_this_run = True
+        file_start = time.monotonic()
         try:
+            record.executed_commands = [command]
             execute_davinci(source, output, command, estimated_bytes=estimated_bytes)
+            record.elapsed_seconds = time.monotonic() - file_start
+            try:
+                record.output_metadata = inspect_video(output)
+                record.validation_result = ('FFmpeg completed cleanly; output metadata is readable. '
+                                            'Resolve compatibility has not been manually confirmed.')
+            except VideoToolError as exc:
+                record.validation_result = f'FFmpeg completed; output metadata inspection unavailable: {exc}'
+            record.completed = True
+            record.completed_this_run = True
+            record.outcome = 'Done'
             completed += 1
         except (VideoToolError, KeyboardInterrupt) as exc:
+            record.elapsed_seconds = time.monotonic() - file_start
+            record.outcome = 'Interrupted' if (isinstance(exc, KeyboardInterrupt) or
+                                               isinstance(exc.__cause__, KeyboardInterrupt)) else 'Failed'
+            record.error = str(exc)
             failed += 1
             print(f'FAILED: {source.name}: {exc}', flush=True)
             if isinstance(exc, KeyboardInterrupt) or isinstance(exc.__cause__, KeyboardInterrupt):
                 interrupted = True
                 break
+    for record, _ in plans[attempted:]:
+        record.outcome = 'Not attempted'
+    batch_finished = time.monotonic()
+    for record in records:
+        record.batch_elapsed_seconds = batch_finished - batch_start
+    try:
+        receipt = processing_receipts.write(records, batch_start, batch_finished)
+        if receipt:
+            print(f'Processing receipt: {receipt}')
+    except OSError as exc:
+        print(f'WARNING: conversions completed, but the processing receipt could not be saved: {exc}')
     print(f'\nBatch results: {completed} succeeded, {failed} failed, '
           f'{len(plans) - attempted} not attempted.')
     return 130 if interrupted else (1 if failed else 0)
@@ -492,7 +563,27 @@ def main(argv=None):
             estimate = estimate_davinci_size(metadata, settings)
             print_plan(source, output, metadata, command, settings)
             if args.execute:
+                started = time.monotonic()
                 execute_davinci(source, output, command, estimated_bytes=estimate)
+                finished = time.monotonic()
+                record = processing_receipts.Record(
+                    source, output, command=command, outcome='Done', completed=True,
+                    attempted_this_run=True, completed_this_run=True,
+                    duration=duration_value(metadata) or 0, elapsed_seconds=finished - started,
+                    batch_elapsed_seconds=finished - started, source_metadata=metadata,
+                    executed_commands=[command], davinci_settings=settings)
+                try:
+                    record.output_metadata = inspect_video(output)
+                    record.validation_result = ('FFmpeg completed cleanly; output metadata is readable. '
+                                                'Resolve compatibility has not been manually confirmed.')
+                except VideoToolError as exc:
+                    record.validation_result = f'FFmpeg completed; output metadata inspection unavailable: {exc}'
+                try:
+                    receipt = processing_receipts.write([record], started, finished)
+                    if receipt:
+                        print(f'Processing receipt: {receipt}')
+                except OSError as exc:
+                    print(f'WARNING: conversion completed, but the processing receipt could not be saved: {exc}')
             else:
                 print("\nPreview only: no output created. Review this plan before rerunning with --execute.")
         elif args.json:

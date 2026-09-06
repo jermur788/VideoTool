@@ -7,6 +7,7 @@ import threading
 import unittest
 from unittest.mock import patch
 
+import conversion_history
 import videotool
 import videotool_gui as gui
 
@@ -135,6 +136,62 @@ class GuiTests(unittest.TestCase):
         with patch('videotool.execute_davinci') as execute:
             self.assertEqual(gui.convert(gui.retry_preview(items), threading.Event(), lambda *args: None), (0, 0, 0))
         execute.assert_not_called()
+
+    def test_success_writes_human_receipt_with_timing_and_history_link(self):
+        metadata = {**self.metadata, 'format': {'duration': '10', 'size': '1000'},
+                    'streams': [dict(self.metadata['streams'][0], codec_name='h264')]}
+        output_metadata = {
+            'format': {'duration': '10', 'size': '2000'},
+            'streams': [
+                {'index': 0, 'codec_type': 'video', 'codec_name': 'dnxhd',
+                 'profile': 'DNXHR SQ', 'pix_fmt': 'yuv422p', 'width': 256,
+                 'height': 144, 'avg_frame_rate': '25/1'},
+                {'index': 1, 'codec_type': 'audio', 'codec_name': 'pcm_s16le',
+                 'bits_per_sample': 16, 'sample_rate': '48000', 'channels': 2},
+            ],
+        }
+        with patch('videotool.inspect_video', return_value=metadata), \
+                patch('videotool.shutil.which', return_value='ffmpeg'):
+            item = gui.preview(self.source)[0]
+        receipts = []
+        with patch('videotool.execute_davinci', side_effect=self.fake_success), \
+                patch('videotool.inspect_video', return_value=output_metadata), \
+                patch('processing_receipts.ffmpeg_version', return_value='ffmpeg test version'):
+            result = gui.convert([item], threading.Event(), lambda *args: None,
+                                 receipt_report=lambda *args: receipts.append(args))
+        self.assertEqual(result, (1, 0, 0))
+        receipt_path, summary, error = receipts[0]
+        self.assertEqual(error, '')
+        self.assertTrue(receipt_path.is_file())
+        text = receipt_path.read_text(encoding='utf-8')
+        for expected in ('# VideoTool processing receipt', 'DNXHR SQ', 'pcm_s16le',
+                         'ffmpeg test version', 'Effective conversion speed:',
+                         'Resolve compatibility has not been manually confirmed',
+                         '-progress pipe:1', '- Attempted: 1', '- Completed: 1'):
+            self.assertIn(expected, text)
+        self.assertIn(str(receipt_path), summary)
+        self.assertIsNotNone(item.elapsed_seconds)
+        self.assertIsNotNone(item.batch_elapsed_seconds)
+        saved = conversion_history.read(self.folder)[0]
+        self.assertEqual(saved['processing_receipt'], receipt_path.name)
+        self.assertIsNotNone(saved['elapsed_seconds'])
+        with patch('videotool.inspect_video', return_value=metadata), \
+                patch('videotool.shutil.which', return_value='ffmpeg'):
+            reopened = gui.preview(self.source)[0]
+        self.assertTrue(reopened.completed)
+        self.assertEqual(reopened.receipt_path, receipt_path)
+
+    def test_receipt_write_failure_does_not_change_video_success(self):
+        item = self.make_preview()[0]
+        reports = []
+        with patch('videotool.execute_davinci', side_effect=self.fake_success), \
+                patch('processing_receipts.write', side_effect=OSError('read only')):
+            result = gui.convert([item], threading.Event(), lambda *args: None,
+                                 receipt_report=lambda *args: reports.append(args))
+        self.assertEqual(result, (1, 0, 0))
+        self.assertTrue(item.completed)
+        self.assertIsNone(reports[0][0])
+        self.assertIn('could not be saved', reports[0][2])
 
     def test_completion_and_open_folder(self):
         items = [gui.Conversion(self.source, self.folder / 'a.mov', [], completed=True),
@@ -273,6 +330,30 @@ class GuiTests(unittest.TestCase):
             result = gui.convert(items, stop, lambda *args: None)
         self.assertEqual(result, (1, 0, 1))
         self.assertEqual(execute.call_count, 1)
+
+    def test_cancel_current_preserves_partial_and_stops_batch(self):
+        (self.folder / 'second.mp4').write_bytes(b'second')
+        with patch('videotool.inspect_video', return_value=self.metadata), \
+                patch('videotool.shutil.which', return_value='ffmpeg'):
+            items = gui.preview(self.folder, folder=True)
+        cancel = threading.Event()
+        events = []
+        def execute(source, output, command, callback, cancel=None):
+            output.write_bytes(b'partial retained')
+            cancel.set()
+            raise videotool.ConversionCancelled('Conversion cancelled; partial output preserved.')
+        with patch('videotool.execute_davinci', side_effect=execute) as run, \
+                patch('conversion_history.save') as save:
+            result = gui.convert(items, threading.Event(), lambda *args: events.append(args),
+                                 cancel=cancel)
+        self.assertEqual(result, (0, 0, 2))
+        self.assertEqual(run.call_count, 1)
+        save.assert_not_called()
+        self.assertEqual(items[0].outcome, 'Interrupted')
+        self.assertEqual(items[1].outcome, 'Not attempted')
+        self.assertEqual(items[0].output.read_bytes(), b'partial retained')
+        self.assertEqual([event[1] for event in events],
+                         ['Converting', 'Interrupted', 'Not attempted'])
 
     def test_failure_continues_and_blocked_counts(self):
         item = self.make_preview()[0]

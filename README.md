@@ -4,6 +4,9 @@ A small local Python command-line tool for inspecting videos and creating
 DaVinci editing intermediates with FFmpeg, with an optional desktop window.
 Source files are retained.
 
+The proposed Gemini analysis and Google Drive delivery workflow is documented in
+[NEXT_VERSION.md](NEXT_VERSION.md).
+
 ## Desktop window
 
 Hover over any button for a short explanation, including buttons that are currently
@@ -21,14 +24,20 @@ Open the interface from the VideoTool folder:
 python3 videotool_gui.py
 ```
 
-1. Choose a preparation preset, then a video or a folder. For upload presets, choose finished DaVinci exports.
-   For DaVinci copies, leave **Use automatic** selected or click **Choose reference**
-   and select a DNxHR MOV you have already confirmed works in Resolve.
+1. Choose a preparation preset, then use **Choose source** to select one video or a folder.
+   For upload presets, choose finished DaVinci exports. DaVinci copies automatically preserve
+   source bit depth. Open **Advanced settings** only when you want to use a DNxHR MOV that you
+   have already confirmed works in Resolve as a format reference.
 2. Optionally choose an existing output folder; otherwise copies go beside the originals.
-3. Optionally enter a **Location name**, such as `Dublin`, for names like
+3. Optionally enter a location under **Name files by location**, such as `Dublin`, for names like
    `Dublin_001.mov`, `Dublin_002.mov`. Leave it blank to keep the default names.
-4. Click **Preview**. Select a row to see the full source/output paths, format, or error.
-5. Review the ready files and click **Convert ready files** to confirm and start.
+4. Click **Preview**. The list shows source size, duration, detected bit depth, output name,
+   and color-coded status. Select a row to reveal its full paths, format, or error.
+5. Review the ready files and click **Convert ready files** to confirm and start. Progress,
+   retry, receipt, and output-folder controls appear when they are useful.
+
+When the desktop Tcl/Tk installation provides TkDND, a video or folder can also be dropped
+onto the window. **Choose source** remains available on systems without that optional support.
 
 Location numbering continues after the highest existing number in the output
 folder: if `Dublin_007.mov` exists, new files start at `Dublin_008.mov`. Gaps are
@@ -46,6 +55,28 @@ an existing source folder. Keep the history file with the output folder. If
 saving history fails, the completed row shows a warning; the open window still
 remembers its successes.
 
+Each run that completes at least one video also creates a human-readable Markdown
+file named `VideoTool-processing-YYYYMMDD-HHMMSS.md` in the output folder. It
+records the source and output paths and sizes, video and audio formats, preset
+parameters, exact FFmpeg command or two-pass commands, FFmpeg version, source
+duration, per-file elapsed time, effective speed relative to realtime, validation
+scope, and batch totals. **View processing receipt** opens the latest record;
+**Copy summary** copies the latest run counts, elapsed time, and receipt location.
+The command-line `davinci --execute` and `batch --execute` workflows create the
+same receipt format.
+
+Receipt timing measures local encoding time for each file. Batch timing covers
+the attempted run. The SQLite history also stores source/output sizes, duration,
+elapsed time, conversion speed, and the associated receipt name for newly
+completed files. Existing history databases need no migration; older entries
+without these fields remain readable.
+
+The receipt distinguishes local validation from external testing. “Completed”
+means FFmpeg finished and VideoTool performed its available local checks. It does
+not mean DaVinci Resolve successfully imported the file, or that AI Studio or
+YouTube accepted an upload. If the Markdown file cannot be written, completed
+video remains successful and the interface reports the receipt error.
+
 Older exports without a history record reserve their numbers, but the app cannot
 reliably identify which source created them. When adding footage to those older
 exports, select only the new footage or put new sources in their own folder.
@@ -53,10 +84,15 @@ Use a separate output folder when working with exports from several locations.
 
 The window stays responsive while inspecting or converting. It shows each file's
 status and a final results summary. **Stop after current file** lets the active
-conversion finish, then leaves the remaining files unprocessed. Close the window
-after work finishes.
+conversion finish, then leaves the remaining files unprocessed. **Cancel current
+conversion** terminates the active FFmpeg process and also stops the batch. The
+current file is marked **Interrupted**, is never recorded as successful, and any
+partial output remains in place. Files later in the batch do not start. During an
+AI Studio two-pass conversion, cancelling during or after the first pass prevents
+the second pass from starting; because pass one does not create the target file,
+there may be no partial output in that case. Close the window after work finishes.
 
-After a failure or stop, click **Preview retry**, review the new list, then
+After a failure, stop, or cancellation, click **Preview retry**, review the new list, then
 **Convert ready files**. Completed files remain **Done** and are not converted
 again. Unfinished files keep their planned names when available. A partial or
 existing output is retained; the retry gets the next location number, or a

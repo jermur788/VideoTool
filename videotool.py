@@ -4,6 +4,7 @@ import argparse
 import json
 import math
 from pathlib import Path
+import re
 import shutil
 import shlex
 import subprocess
@@ -122,7 +123,162 @@ def select_video(metadata):
     return candidates[0]
 
 
-def plan_davinci(source, output, metadata):
+DAVINCI_PROFILES = {
+    'DNXHR LB': {'name': 'DNxHR LB', 'encoder_profile': 'dnxhr_lb',
+                 'pixel_format': 'yuv422p', 'bit_depth': 8, 'estimate_bpp': 0.45},
+    'DNXHR SQ': {'name': 'DNxHR SQ', 'encoder_profile': 'dnxhr_sq',
+                 'pixel_format': 'yuv422p', 'bit_depth': 8, 'estimate_bpp': 1.45},
+    'DNXHR HQ': {'name': 'DNxHR HQ', 'encoder_profile': 'dnxhr_hq',
+                 'pixel_format': 'yuv422p', 'bit_depth': 8, 'estimate_bpp': 2.20},
+    'DNXHR HQX': {'name': 'DNxHR HQX', 'encoder_profile': 'dnxhr_hqx',
+                  'pixel_format': 'yuv422p10le', 'bit_depth': 10, 'estimate_bpp': 3.55},
+}
+
+
+def default_davinci_settings():
+    """Return the 8-bit half of the automatic source-depth policy."""
+    return {**DAVINCI_PROFILES['DNXHR SQ'], 'audio_codec': 'pcm_s16le',
+            'audio_bits': 16, 'reference': None, 'reference_rate': None}
+
+
+def source_bit_depth(metadata):
+    """Identify supported 8- or 10-bit source video without silently reducing it."""
+    video = select_video(metadata)
+    raw = video.get('bits_per_raw_sample')
+    try:
+        reported = int(raw) if raw not in (None, '', '0', 0) else None
+    except (TypeError, ValueError):
+        reported = None
+    pixel_format = str(video.get('pix_fmt') or '').lower()
+    match = re.search(r'(?:p0?|gray)(9|10|12|14|16)(?:le|be)$', pixel_format)
+    encoded = int(match.group(1)) if match else None
+    if reported and encoded and reported != encoded:
+        raise VideoToolError(f'Source bit-depth metadata conflicts: {reported}-bit data with '
+                             f'pixel format {pixel_format}.')
+    depth = reported or encoded
+    if depth is None and (re.fullmatch(r'yuvj?\d+p', pixel_format) or
+                          pixel_format in {'nv12', 'nv21', 'yuyv422', 'uyvy422', 'gbrp',
+                                           'gray', 'gray8', 'rgb24', 'bgr24', 'rgba',
+                                           'bgra', 'argb', 'abgr'}):
+        depth = 8
+    if depth not in (8, 10):
+        detail = f'{depth}-bit' if depth else f'pixel format {pixel_format or "unknown"}'
+        raise VideoToolError(f'Cannot safely choose an 8- or 10-bit DaVinci format for {detail}.')
+    return depth
+
+
+def davinci_settings_for_source(metadata):
+    """Keep 8-bit sources 8-bit and 10-bit sources 10-bit."""
+    profile = 'DNXHR HQX' if source_bit_depth(metadata) == 10 else 'DNXHR SQ'
+    return {**DAVINCI_PROFILES[profile], 'audio_codec': 'pcm_s16le',
+            'audio_bits': 16, 'reference': None, 'reference_rate': None,
+            'automatic': True}
+
+
+def davinci_settings_from_reference(reference):
+    """Read a known-working DNxHR/PCM MOV and reproduce its useful codec choices."""
+    reference = validate_source(reference)
+    if reference.suffix.lower() != '.mov':
+        raise VideoToolError('The working reference must be a .mov file.')
+    metadata = inspect_video(reference)
+    video = select_video(metadata)
+    if video.get('codec_name') != 'dnxhd':
+        raise VideoToolError('The working reference must contain DNxHR video.')
+    profile_key = str(video.get('profile', '')).upper().replace('-', ' ').replace('_', ' ')
+    profile_key = ' '.join(profile_key.split())
+    settings = DAVINCI_PROFILES.get(profile_key)
+    if not settings:
+        raise VideoToolError(f"Unsupported DNxHR reference profile: {video.get('profile', 'unknown')}. "
+                             "Supported profiles are LB, SQ, HQ, and HQX.")
+    if video.get('pix_fmt') != settings['pixel_format']:
+        raise VideoToolError(f"The reference uses unexpected pixel format {video.get('pix_fmt', 'unknown')} "
+                             f"for {settings['name']}.")
+    audio = [s for s in metadata['streams'] if s.get('codec_type') == 'audio']
+    codecs = {s.get('codec_name') for s in audio}
+    supported_audio = {'pcm_s16le': 16, 'pcm_s24le': 24, 'pcm_s32le': 32}
+    if codecs and (len(codecs) != 1 or next(iter(codecs)) not in supported_audio):
+        raise VideoToolError('The working reference must use one consistent PCM audio depth.')
+    audio_codec = next(iter(codecs)) if codecs else 'pcm_s16le'
+    duration = duration_value(metadata)
+    try:
+        size = int(metadata.get('format', {}).get('size', 0))
+    except (TypeError, ValueError):
+        size = 0
+    rate = size * 8 / duration if size > 0 and duration else None
+    return {**settings, 'audio_codec': audio_codec,
+            'audio_bits': supported_audio[audio_codec], 'reference': reference,
+            'reference_rate': rate, 'reference_width': video.get('width'),
+            'reference_height': video.get('height'),
+            'reference_fps': rate_value(video.get('avg_frame_rate'))}
+
+
+def rate_value(value):
+    try:
+        numerator, denominator = value.split('/')
+        rate = float(numerator) / float(denominator)
+        return rate if math.isfinite(rate) and rate > 0 else None
+    except (AttributeError, ValueError, ZeroDivisionError):
+        return None
+
+
+def duration_value(metadata):
+    try:
+        value = float(metadata.get('format', {}).get('duration', 0))
+        return value if math.isfinite(value) and value > 0 else None
+    except (TypeError, ValueError):
+        return None
+
+
+def estimate_davinci_size(metadata, settings=None):
+    """Return a cautious byte estimate, or None when duration/rate is unavailable."""
+    settings = settings or davinci_settings_for_source(metadata)
+    video = select_video(metadata)
+    duration = duration_value(metadata)
+    fps = rate_value(video.get('avg_frame_rate'))
+    width, height = video.get('width'), video.get('height')
+    if not duration or not fps or not isinstance(width, int) or not isinstance(height, int):
+        return None
+    reference_rate = settings.get('reference_rate')
+    reference_pixels = (settings.get('reference_width') or 0) * (settings.get('reference_height') or 0)
+    reference_fps = settings.get('reference_fps')
+    if reference_rate and reference_pixels and reference_fps:
+        video_rate = reference_rate * (width * height * fps) / (reference_pixels * reference_fps)
+    else:
+        video_rate = width * height * fps * settings['estimate_bpp']
+        audio = [s for s in metadata['streams'] if s.get('codec_type') == 'audio']
+        video_rate += sum(int(s.get('sample_rate', 48000)) * int(s.get('channels', 2)) *
+                          settings['audio_bits'] for s in audio)
+    # Container variation and the fact that this is a planning estimate need headroom.
+    return math.ceil(video_rate * duration / 8 * 1.10)
+
+
+def readable_size(value):
+    if value is None:
+        return 'unavailable'
+    units = ('bytes', 'KB', 'MB', 'GB', 'TB')
+    amount = float(value)
+    for unit in units:
+        if amount < 1000 or unit == units[-1]:
+            return f'{amount:.1f} {unit}' if unit != 'bytes' else f'{int(amount)} bytes'
+        amount /= 1000
+
+
+def available_space(output):
+    try:
+        return shutil.disk_usage(Path(output).parent).free
+    except OSError as exc:
+        raise VideoToolError(f'Cannot check free space for {Path(output).parent}: {exc}') from exc
+
+
+def require_space(output, estimated_bytes):
+    free = available_space(output)
+    if estimated_bytes is not None and estimated_bytes > free:
+        raise VideoToolError(f'Estimated output {readable_size(estimated_bytes)} exceeds available space '
+                             f'{readable_size(free)} in {Path(output).parent}.')
+    return free
+
+
+def plan_davinci(source, output, metadata, settings=None):
     """Build an argument list only: no output creation and no conversion."""
     source = validate_source(source)
     output = validate_output(source, output)
@@ -131,6 +287,7 @@ def plan_davinci(source, output, metadata):
     ffmpeg = shutil.which("ffmpeg")
     if not ffmpeg:
         raise VideoToolError("ffmpeg was not found. Install FFmpeg and ensure it is on PATH.")
+    settings = settings or davinci_settings_for_source(metadata)
     video = select_video(metadata)
     width, height = video.get("width", 0), video.get("height", 0)
     if width < 256 or height < 120 or width % 2 or height % 2:
@@ -140,7 +297,8 @@ def plan_davinci(source, output, metadata):
                "-map", f"0:{video['index']}"]
     for stream in audio:
         command += ["-map", f"0:{stream['index']}"]
-    command += ["-c:v", "dnxhd", "-profile:v", "dnxhr_hqx", "-pix_fmt", "yuv422p10le",
+    command += ["-c:v", "dnxhd", "-profile:v", settings['encoder_profile'],
+                "-pix_fmt", settings['pixel_format'],
                 "-fps_mode", "passthrough"]
     # Carry the known source tags; never assume Rec.709 or apply a LUT/tone map.
     for key, option in (("color_range", "-color_range"), ("color_space", "-colorspace"),
@@ -149,21 +307,29 @@ def plan_davinci(source, output, metadata):
         if value and value not in ("unknown", "unspecified", "reserved"):
             command += [option, value]
     if audio:
-        command += ["-c:a", "pcm_s24le"]
+        command += ["-c:a", settings['audio_codec']]
     command += ["-sn", "-dn", "-write_tmcd", "0", "-f", "mov", str(output)]
     return command
 
 
-def print_plan(source, output, metadata, command):
+def print_plan(source, output, metadata, command, settings=None):
+    settings = settings or davinci_settings_for_source(metadata)
     video = select_video(metadata)
     print(f"Source: {source}\nOutput: {output}")
     print("Purpose: create an editing intermediate for DaVinci Resolve Free on Linux.")
-    print(f"Video stream {video['index']}: DNxHR HQX, 10-bit 4:2:2; "
+    print(f"Video stream {video['index']}: {settings['name']}, {settings['bit_depth']}-bit 4:2:2; "
           f"{video['width']} x {video['height']}; source frame timing retained "
           f"(average {frame_rate(video.get('avg_frame_rate'))} fps).")
     audio = [str(s['index']) for s in metadata['streams'] if s.get('codec_type') == 'audio']
-    print(f"Audio: PCM 24-bit; streams {', '.join(audio)}; source rate/channels retained."
+    print(f"Audio: PCM {settings['audio_bits']}-bit; streams {', '.join(audio)}; source rate/channels retained."
           if audio else "Audio: none in source.")
+    print(f"Settings: learned from {settings['reference']}"
+          if settings.get('reference') else
+          f"Settings: automatic source-depth choice ({source_bit_depth(metadata)}-bit source).")
+    estimate = estimate_davinci_size(metadata, settings)
+    free = available_space(output)
+    print(f"Estimated output size: {readable_size(estimate)} (includes 10% planning headroom).")
+    print(f"Available space: {readable_size(free)} in {Path(output).parent}.")
     print("Tradeoffs: much larger files; lossy video re-encode. 4:2:0 to 4:2:2 adds no source detail.")
     print("No scaling, LUT, tone mapping, or deliberate color-space change. Known color tags retained.")
     print("Preview images, subtitles, and data/timecode tracks are omitted. Source is retained.")
@@ -200,9 +366,10 @@ def run_with_progress(command, progress):
         return subprocess.CompletedProcess(command, code, stderr=errors.read())
 
 
-def execute_davinci(source, output, command, progress=None):
+def execute_davinci(source, output, command, progress=None, estimated_bytes=None):
     # Recheck immediately before launch; -n also refuses an output created since planning.
     validate_output(source, output)
+    require_space(output, estimated_bytes)
     print("Converting; FFmpeg errors will be shown when it finishes.", flush=True)
     try:
         if progress is None:
@@ -226,7 +393,7 @@ def execute_davinci(source, output, command, progress=None):
 VIDEO_EXTENSIONS = {'.mp4', '.mov', '.mkv', '.avi', '.m4v', '.mts', '.m2ts', '.webm', '.mpg', '.mpeg', '.mxf'}
 
 
-def discover_batch(folder, output_dir=None):
+def discover_batch(folder, output_dir=None, include_intermediates=False):
     """Return a stable list of candidates and an existing destination folder."""
     try:
         folder = Path(folder).expanduser().resolve(strict=True)
@@ -236,7 +403,7 @@ def discover_batch(folder, output_dir=None):
         sources = sorted((p for p in folder.iterdir()
                           if p.is_file() and not p.is_symlink()
                           and p.suffix.lower() in VIDEO_EXTENSIONS
-                          and not p.name.lower().endswith('_davinci.mov')),
+                          and (include_intermediates or not p.name.lower().endswith('_davinci.mov'))),
                          key=lambda p: p.name)
     except (OSError, RuntimeError) as exc:
         raise VideoToolError(f'Cannot read batch folder: {exc}') from exc
@@ -245,9 +412,10 @@ def discover_batch(folder, output_dir=None):
     return sources, destination
 
 
-def batch_davinci(folder, output_dir=None, execute=False):
+def batch_davinci(folder, output_dir=None, execute=False, reference=None):
     """Preview all candidates before sequential conversion; never overwrite."""
     sources, destination = discover_batch(folder, output_dir)
+    reference_settings = davinci_settings_from_reference(reference) if reference else None
     plans = []
     failed = 0
     for index, source in enumerate(sources, 1):
@@ -257,24 +425,30 @@ def batch_davinci(folder, output_dir=None, execute=False):
         try:
             validate_output(source, output)
             metadata = inspect_video(source)
-            command = plan_davinci(source, output, metadata)
-            print_plan(source, output, metadata, command)
-            plans.append((source, output, command))
+            settings = reference_settings or davinci_settings_for_source(metadata)
+            command = plan_davinci(source, output, metadata, settings)
+            print_plan(source, output, metadata, command, settings)
+            plans.append((source, output, command, estimate_davinci_size(metadata, settings)))
         except VideoToolError as exc:
             failed += 1
             print(f'FAILED: {source.name}: {exc}', flush=True)
     print(f'\nBatch preview: {len(plans)} ready, {failed} failed.')
+    estimates = [plan[3] for plan in plans]
+    total_estimate = sum(estimates) if all(value is not None for value in estimates) else None
+    if plans:
+        print(f'Estimated batch output: {readable_size(total_estimate)}; '
+              f'available: {readable_size(available_space(plans[0][1]))}.')
     if not execute:
         print('Preview only: no output created. Review before rerunning with --execute.')
         return 1 if failed else 0
     completed = 0
     interrupted = False
     attempted = 0
-    for index, (source, output, command) in enumerate(plans, 1):
+    for index, (source, output, command, estimated_bytes) in enumerate(plans, 1):
         print(f'\nConverting [{index}/{len(plans)}]: {source.name}', flush=True)
         attempted += 1
         try:
-            execute_davinci(source, output, command)
+            execute_davinci(source, output, command, estimated_bytes=estimated_bytes)
             completed += 1
         except (VideoToolError, KeyboardInterrupt) as exc:
             failed += 1
@@ -293,27 +467,32 @@ def main(argv=None):
     inspect = commands.add_parser("inspect", help="Read video metadata without modifying the file")
     inspect.add_argument("source", help="Path to a local video file")
     inspect.add_argument("--json", action="store_true", help="Print full ffprobe metadata as JSON")
-    davinci = commands.add_parser("davinci", help="Preview a DNxHR HQX / PCM MOV conversion")
+    davinci = commands.add_parser("davinci", help="Preview a DNxHR / PCM MOV conversion")
     davinci.add_argument("source", help="Path to a local video file")
     davinci.add_argument("--output", help="New .mov path (default: SOURCE_davinci.mov beside source)")
     davinci.add_argument("--execute", action="store_true",
                          help="Confirm the reviewed plan and actually create the output")
+    davinci.add_argument("--reference", help="Known-working DNxHR/PCM .mov whose format should be reused")
     batch = commands.add_parser('batch', help='Preview DaVinci conversions for videos in a folder')
     batch.add_argument('source', help='Folder to scan (no subfolders)')
     batch.add_argument('--output-dir', help='Existing output folder (default: source folder)')
     batch.add_argument('--execute', action='store_true', help='Confirm and convert all ready files')
+    batch.add_argument('--reference', help='Known-working DNxHR/PCM .mov whose format should be reused')
     args = parser.parse_args(argv)
     try:
         if args.command == 'batch':
-            return batch_davinci(args.source, args.output_dir, args.execute)
+            return batch_davinci(args.source, args.output_dir, args.execute, args.reference)
         source = validate_source(args.source)
         metadata = inspect_video(source)
         if args.command == "davinci":
             output = validate_output(source, args.output or source.with_name(source.stem + "_davinci.mov"))
-            command = plan_davinci(source, output, metadata)
-            print_plan(source, output, metadata, command)
+            settings = (davinci_settings_from_reference(args.reference) if args.reference else
+                        davinci_settings_for_source(metadata))
+            command = plan_davinci(source, output, metadata, settings)
+            estimate = estimate_davinci_size(metadata, settings)
+            print_plan(source, output, metadata, command, settings)
             if args.execute:
-                execute_davinci(source, output, command)
+                execute_davinci(source, output, command, estimated_bytes=estimate)
             else:
                 print("\nPreview only: no output created. Review this plan before rerunning with --execute.")
         elif args.json:

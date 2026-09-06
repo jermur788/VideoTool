@@ -6,6 +6,9 @@ Source files are retained.
 
 ## Desktop window
 
+Hover over any button for a short explanation, including buttons that are currently
+disabled. Hints disappear when you move away, click, press Escape, or change focus.
+
 On Linux Mint/Ubuntu, install the window library once:
 
 ```bash
@@ -18,24 +21,54 @@ Open the interface from the VideoTool folder:
 python3 videotool_gui.py
 ```
 
-1. Choose a video or a folder. Folder mode uses the same scan rules as the batch command.
+1. Choose a preparation preset, then a video or a folder. For upload presets, choose finished DaVinci exports.
+   For DaVinci copies, leave **Use automatic** selected or click **Choose reference**
+   and select a DNxHR MOV you have already confirmed works in Resolve.
 2. Optionally choose an existing output folder; otherwise copies go beside the originals.
 3. Optionally enter a **Location name**, such as `Dublin`, for names like
    `Dublin_001.mov`, `Dublin_002.mov`. Leave it blank to keep the default names.
 4. Click **Preview**. Select a row to see the full source/output paths, format, or error.
 5. Review the ready files and click **Convert ready files** to confirm and start.
 
-Location numbering starts at 001 in source filename sort order. Blocked or failed
-files retain their assigned numbers. Changing the location requires a new preview.
-Existing numbered outputs for that location are excluded from the folder scan;
-existing target files are still blocked, never overwritten. Use a separate output
-folder when working with exports from several locations. Spaces and accented
-letters are supported; path separators and special filename characters are refused.
+Location numbering continues after the highest existing number in the output
+folder: if `Dublin_007.mov` exists, new files start at `Dublin_008.mov`. Gaps are
+not reused. Existing files, folders, and links reserve their names, including
+case variants. New sources are numbered in filename sort order. Changing the
+location requires a new preview. Existing numbered exports for that location
+are excluded from the folder scan. Spaces and accented letters are supported;
+path separators and special filename characters are refused.
+
+Successful conversions made by this version are recorded in a small hidden
+`.videotool-history.sqlite3` file in the output folder. When the original source,
+location, and recorded output still match, a later preview shows **Done** and
+skips conversion. This works after closing the app and when adding footage to
+an existing source folder. Keep the history file with the output folder. If
+saving history fails, the completed row shows a warning; the open window still
+remembers its successes.
+
+Older exports without a history record reserve their numbers, but the app cannot
+reliably identify which source created them. When adding footage to those older
+exports, select only the new footage or put new sources in their own folder.
+Use a separate output folder when working with exports from several locations.
 
 The window stays responsive while inspecting or converting. It shows each file's
 status and a final results summary. **Stop after current file** lets the active
 conversion finish, then leaves the remaining files unprocessed. Close the window
 after work finishes.
+
+After a failure or stop, click **Preview retry**, review the new list, then
+**Convert ready files**. Completed files remain **Done** and are not converted
+again. Unfinished files keep their planned names when available. A partial or
+existing output is retained; the retry gets the next location number, or a
+unique `_retry_001_davinci.mov` suffix when no location is entered. No existing
+output is deleted or overwritten. The retry preview inspects sources again,
+so repaired inputs can be retried.
+
+The completion summary shows completed, failed/blocked, and unfinished counts
+across the list, including prior successes, and the destination path. **Open
+output folder** opens that folder in the desktop file manager (or the selected
+row's output folder if there is more than one). Progress percentages during a
+retry describe only the remaining ready files.
 
 Only files captured in the preview are converted. Changing the selection requires
 a new preview, and sources changed since inspection are refused. Existing outputs
@@ -50,6 +83,77 @@ Single-file names use `clip_davinci.mov`; folder mode uses `clip.mp4_davinci.mov
 
 Python 3.10+, FFmpeg/ffprobe, Tkinter, and a graphical desktop are required.
 The command-line tool still works without Tkinter.
+
+## Prepare finished exports for manual upload
+
+Use the **Prepare for** selector in the desktop window:
+
+| Preset | Result |
+| --- | --- |
+| DaVinci editing copy | DNxHR/PCM MOV that keeps 8-bit sources at 8-bit and 10-bit sources at 10-bit, or settings learned from a working reference. |
+| AI Studio upload | A smaller H.264/AAC MP4, using an adjustable maximum target per file. |
+| YouTube upload | A quality-focused H.264/AAC MP4 at source resolution, with no file-size cap. |
+
+Choose the finished export, select the preset, and click **Preview** to see the
+output name, dimensions, audio handling, and tradeoffs. Then convert the ready
+files. The original exports are retained. Open the output folder and upload
+completed files yourself; VideoTool does not connect to accounts or upload files.
+The upload presets are desktop features; the existing command-line commands
+continue to prepare editing copies.
+
+### AI Studio size target
+
+The default **380 MB** is a user workflow target chosen to leave headroom under
+the user's observed possible 400 MB upload cap. It is **not a verified universal
+AI Studio limit**. There is no five-minute cutoff. The target is per output file,
+uses decimal MB (1 MB = 1,000,000 bytes), and accepts values from 1 to 100000 MB.
+
+Encoding uses two passes with a bitrate budget leaving 5% for overhead and
+variation. The longest edge is limited to 1920 pixels, or 1280 if the available
+bitrate is too low; videos are never upscaled. Frame rate is retained as the
+source average at constant frame rate. The preview shows the chosen dimensions
+and bitrate. Video bitrate is capped at 8 Mb/s for this analysis-oriented copy.
+
+A preset guard refuses targets below the greater of 500 kb/s or 0.05 bits per
+pixel per frame at the smallest chosen dimensions. This is a practical quality
+floor, not a guarantee of visual quality. Increase the size target or export
+shorter sections from DaVinci if it is refused.
+
+The bitrate calculation is an estimate. **Actual size is checked after encoding**,
+along with codec, dimensions, audio, and duration. A result above the target is
+preserved but marked failed, not ready, and is not saved as a successful conversion.
+No output is silently truncated to meet the target. Retry uses a new name if the
+old output exists. AI Studio's acceptance still needs a manual upload check.
+
+### YouTube quality preset
+
+The preset follows YouTube's [official upload encoding guidance](https://support.google.com/youtube/answer/1722171?hl=en),
+checked on 2026-09-06: fast-start MP4, H.264 High Profile with 4:2:0 video, progressive
+frames, closed GOPs, and AAC-LC audio at 48 kHz. It uses quality-based variable
+bitrate (CRF 18, slow preset), retaining resolution except even-pixel rounding and
+the source average frame rate. CRF 18 is VideoTool's quality choice, not a YouTube
+requirement. Stereo audio uses 384 kb/s; mono uses 128 kb/s. There is no size cap.
+
+### Supported finished exports and existing workflows
+
+These upload presets expect progressive, square-pixel SDR Rec.709 YUV exports.
+Known HDR, other tagged color spaces, interlacing, and rotation metadata are refused
+with instructions to prepare a suitable finished export in DaVinci. Missing color
+tags are called out in the preview: confirm that the source is a finished SDR export.
+No HDR/log tone mapping is performed. Upload copies are 8-bit, lossy derivatives.
+
+One audio track is included (the sole track or a uniquely marked default).
+Surround audio is mixed to stereo, as disclosed in the preview. Silent exports
+are supported. Subtitle, data, and other audio tracks are omitted.
+
+Upload presets can scan incoming `_davinci.mov` files. They exclude their own
+`_aistudio.mp4` and `_youtube.mp4` outputs and recognised upload receipts from folder
+scans. Use a folder of finished exports, preferably with a separate destination.
+Default names include the preset, such as `Finished_aistudio.mp4` and
+`Finished_youtube.mp4`. Location naming uses sequential `.mp4` names and continues
+past existing numbers. Retry, progress, completion summaries, and hover hints work
+for all presets. AI Studio progress covers both passes. Saved successes are scoped
+to the preset and AI size target, so one preparation cannot stand in for another.
 
 ## Run it in VS Code
 
@@ -115,13 +219,34 @@ When an assistant is operating this tool, it must present the exact source,
 output, purpose, and significant tradeoffs and obtain your explicit confirmation
 before executing a conversion on your media.
 
-The MOV uses DNxHR HQX with 10-bit 4:2:2 video and uncompressed 24-bit PCM audio.
-This avoids reducing the Action 4's 10-bit video to 8-bit, but is still a lossy
-re-encode. Files will be much larger than camera HEVC; allow ample disk space.
-Upsampling 4:2:0 to 4:2:2 adds no captured detail, and PCM cannot restore detail
-already lost in AAC. Resolution, frame timing, and audio sample rate/channel
-count are retained. No LUT, tone mapping, scaling, or automatic rotation is
-applied; known source color tags are carried forward.
+The automatic MOV format checks the source video depth. It uses **DNxHR SQ with
+8-bit 4:2:2 video** for 8-bit footage and **DNxHR HQX with 10-bit 4:2:2 video**
+for 10-bit footage. Audio uses uncompressed 16-bit PCM. A mixed folder is decided
+one file at a time. Unknown, conflicting, and unsupported source depths are
+refused instead of being silently reduced. These editing copies remain much
+larger than camera HEVC, so keep the original camera files as masters. Upsampling
+4:2:0 to 4:2:2 adds no captured detail, and PCM cannot restore detail already
+lost in AAC.
+
+Use **Choose reference** in the window when you have a DNxHR MOV already verified
+in Resolve. VideoTool reads that file and reuses its DNxHR profile (LB, SQ, HQ, or
+HQX), pixel depth, and PCM depth. Choosing a reference explicitly overrides the
+automatic source-depth choice. It rejects non-DNxHR video, non-PCM audio,
+unexpected pixel formats, and ambiguous primary video. A reference is a format
+example only; its resolution, frame rate, and channel layout are not imposed on
+new footage. Selecting an HQX reference will deliberately produce large HQX files;
+selecting LB makes much smaller files with lower editing-copy quality.
+
+Preview shows a cautious output-size estimate with 10% headroom and the free
+space in the destination. Estimates based on a reference use its measured data
+rate, scaled for the new resolution and frame rate. Automatic SQ/HQX estimates
+use profile-rate approximations. Conversion checks free space again immediately
+before starting and refuses a file when its estimate exceeds the available space.
+The estimate is planning guidance rather than an exact output-size guarantee.
+
+Resolution, frame timing, and audio sample rate/channel count are retained. No
+LUT, tone mapping, scaling, or automatic rotation is applied; known source color
+tags are carried forward.
 
 The tool selects the sole normal video stream, or a uniquely marked default
 video stream. Ambiguous selections are refused. Attached images and thumbnails
@@ -138,7 +263,8 @@ converted by VideoTool works in DaVinci Resolve. See [test results](TEST_RESULTS
 for the recorded result and scope.
 FFmpeg option reference: [official documentation](https://ffmpeg.org/ffmpeg.html).
 
-YouTube and Gemini analysis derivatives remain future work.
+The desktop window also provides the YouTube and AI Studio preparation workflows
+described above.
 
 ## Convert a folder
 
@@ -146,6 +272,14 @@ Preview videos directly inside a folder:
 
 ```bash
 python3 videotool.py batch "/full/path/to/footage"
+```
+
+To learn from a previously verified DNxHR/PCM file, add `--reference` during
+both preview and execution:
+
+```bash
+python3 videotool.py davinci "1.MP4" --reference "/path/to/working_DNxHR_SQ.mov"
+python3 videotool.py batch "/full/path/to/footage" --reference "/path/to/working_DNxHR_SQ.mov"
 ```
 
 After reviewing the plan, convert the ready files:
@@ -169,7 +303,8 @@ Conversions run one at a time, with a file counter and final success/failure
 counts. Ctrl+C during conversion stops the batch; remaining files are reported
 as not attempted. Exit status is 0 for success, 1 for any failure, or 130 for
 an interrupted conversion. Progress is per file, not a percentage within a file.
-Allow ample disk space for the much larger DNxHR outputs.
+Preview reports estimated batch output and available space. Allow ample disk
+space for the much larger DNxHR outputs.
 
 ## Check the code
 

@@ -1,5 +1,26 @@
 Test results — VideoTool
 
+## Automatic source-depth format and storage planning — 2026-09-06
+
+- All 57 automated tests passed with the opt-in desktop-display checks enabled.
+- Automatic DaVinci preparation now uses DNxHR SQ for 8-bit sources and DNxHR
+  HQX for 10-bit sources, with 16-bit PCM audio. Mixed folders are decided per file.
+- Tests verify automatic SQ selection for 8-bit sources, automatic HQX selection
+  for 10-bit sources, refusal of unknown/unsupported depths, and learning
+  LB/SQ/HQ/HQX and PCM depth from a working reference,
+  rejecting incompatible references, estimated-size calculations, insufficient-
+  space refusal, format-specific saved history, and real generated 10-bit HQX conversion.
+- A read-only check identified `1.MP4` as 10-bit HEVC, selected HQX, and estimated
+  89.3 MB. Using the existing
+  `1_davinci.mov` as a reference correctly detected HQX/24-bit PCM and estimated
+  88.4 MB. Neither preview created an output or altered footage.
+- A read-only preview using `/media/jer/ZX20/Tiernaboul/Timeline 1.mov` correctly
+  detected DNxHR LB and estimated 18.2 MB for the same short source. No LB output
+  was created; this confirms reference learning rather than Resolve acceptance.
+- The real-window suite passed against the host display, including the full
+  retry workflow, hover explanations, and AI Studio/YouTube preset switching.
+- Existing files and user footage were not converted, altered, or removed.
+
 Date: 2026-09-05
 
 Command used:
@@ -74,3 +95,53 @@ The user confirmed that the updated program works as expected after the interfac
 location-based naming, and conversion-progress updates. This records the user's
 overall acceptance; individual file details and a new DaVinci import check were
 not supplied.
+
+
+## Retry, continued numbering, and completion summary — 2026-09-06
+
+- All 34 tests passed with the optional desktop workflow enabled.
+- Checks cover preserved successful outputs, retained partial files, unique retry
+  names, saved success recognition after reopening, new footage sorted before
+  older footage, gaps/case variants/symbolic-link collisions, and output creation
+  after preview. Modified outputs are not falsely treated as recorded successes.
+- A real window workflow used temporary generated videos: one conversion succeeded,
+  one simulated failure retained a partial output, retry converted only the failed
+  file, and new footage continued at the next available number. Completion counts
+  and the output-folder button were checked; the file-manager launch was mocked.
+- User footage and existing conversions were not processed. These changes have
+  not been pushed to GitHub.
+
+Run the optional window check from a graphical desktop:
+
+```bash
+VIDEOTOOL_GUI_TESTS=1 python3 -B -m unittest discover -s tests -v
+```
+
+
+## Button hover explanations — 2026-09-06
+
+- Added plain-language hover hints to all nine desktop buttons, including retry
+  and Open output folder. Disabled buttons also display their explanations.
+- All 35 tests passed with desktop checks enabled. Coverage verifies every button
+  has its intended explanation, delayed display, dismissal on leaving/clicking/
+  Escape/focus change, and cancellation when leaving or destroying a button.
+- Existing retry, numbering, and conversion workflow checks continue to pass.
+
+
+## Manual upload preparation — 2026-09-06
+
+- All 47 tests passed with optional desktop checks enabled.
+- Actual generated exports were prepared with both presets. AI Studio's two-pass
+  test output was under its chosen 1 MB target; both outputs were checked for
+  H.264/AAC, dimensions, duration, 48 kHz audio, and fast-start MP4 ordering.
+- Tests cover the default 380 MB target, more-than-five-minute input planning,
+  invalid/too-small targets, downscaling decisions, oversize failure preservation,
+  source retention, creation of an output between passes, unsupported HDR/interlace/
+  rotation, ambiguous audio, silent exports, preset-specific retry, and history scope.
+- The real window test switched presets, edited the target, previewed, encoded,
+  and checked manual-upload completion messaging. Earlier desktop features passed
+  their regression checks. No account connection or upload was performed.
+- YouTube guidance was checked at https://support.google.com/youtube/answer/1722171?hl=en.
+  The 380 MB AI Studio target is a user preference, not a verified platform limit.
+- Only temporary generated footage was processed. Manual playback and platform
+  upload acceptance remain to be checked by the user. Changes have not been pushed.

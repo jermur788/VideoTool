@@ -92,7 +92,8 @@ class VideoToolTests(unittest.TestCase):
     def metadata(self):
         return {"streams": [
             {"index": 0, "codec_type": "video", "width": 3840, "height": 2160,
-             "avg_frame_rate": "25/1", "color_space": "bt709", "disposition": {"default": 1}},
+             "avg_frame_rate": "25/1", "pix_fmt": "yuv420p", "color_space": "bt709",
+             "disposition": {"default": 1}},
             {"index": 1, "codec_type": "audio"},
             {"index": 2, "codec_type": "data"},
             {"index": 5, "codec_type": "video", "disposition": {"attached_pic": 1}},
@@ -106,8 +107,9 @@ class VideoToolTests(unittest.TestCase):
         self.assertEqual([command[i + 1] for i, arg in enumerate(command) if arg == "-map"], ["0:0", "0:1"])
         self.assertIn("-n", command)
         self.assertNotIn("-y", command)
-        self.assertIn("yuv422p10le", command)
-        self.assertIn("pcm_s24le", command)
+        self.assertIn("dnxhr_sq", command)
+        self.assertIn("yuv422p", command)
+        self.assertIn("pcm_s16le", command)
         self.assertNotIn("-r", command)
         self.assertNotIn("-vf", command)
         self.assertFalse(output.exists())
@@ -116,6 +118,31 @@ class VideoToolTests(unittest.TestCase):
         metadata['streams'][0]['disposition'] = {}
         with self.assertRaises(videotool.VideoToolError):
             videotool.select_video(metadata)
+
+    @patch("videotool.shutil.which", return_value="ffmpeg")
+    def test_automatic_format_preserves_source_bit_depth(self, which):
+        eight_bit = self.metadata()
+        ten_bit = self.metadata()
+        ten_bit['streams'][0].update(pix_fmt='yuv420p10le', bits_per_raw_sample='10')
+        eight_command = videotool.plan_davinci(
+            self.source, self.folder / 'eight.mov', eight_bit)
+        ten_command = videotool.plan_davinci(
+            self.source, self.folder / 'ten.mov', ten_bit)
+        self.assertIn('dnxhr_sq', eight_command)
+        self.assertIn('yuv422p', eight_command)
+        self.assertIn('dnxhr_hqx', ten_command)
+        self.assertIn('yuv422p10le', ten_command)
+        self.assertEqual(videotool.source_bit_depth(eight_bit), 8)
+        self.assertEqual(videotool.source_bit_depth(ten_bit), 10)
+
+    def test_automatic_format_refuses_unknown_or_unsupported_depth(self):
+        for pixel_format, reported in [('unknown', None), ('yuv420p12le', '12')]:
+            metadata = self.metadata()
+            metadata['streams'][0]['pix_fmt'] = pixel_format
+            metadata['streams'][0]['bits_per_raw_sample'] = reported
+            with self.subTest(pixel_format=pixel_format), \
+                    self.assertRaisesRegex(videotool.VideoToolError, 'Cannot safely choose'):
+                videotool.davinci_settings_for_source(metadata)
 
     @patch("videotool.shutil.which", return_value="ffmpeg")
     def test_conversion_errors_and_silent_source(self, which):
@@ -219,6 +246,73 @@ class VideoToolTests(unittest.TestCase):
             with self.subTest(folder=folder), contextlib.redirect_stderr(io.StringIO()):
                 self.assertEqual(videotool.main(['batch', str(folder)]), 1)
 
+    @patch('videotool.inspect_video')
+    def test_working_reference_reproduces_profile_and_pcm_depth(self, inspect):
+        reference = self.folder / 'known-good.mov'
+        reference.write_bytes(b'reference')
+        inspect.return_value = {
+            'format': {'duration': '10', 'size': '100000000'},
+            'streams': [
+                {'index': 0, 'codec_type': 'video', 'codec_name': 'dnxhd',
+                 'profile': 'DNXHR HQ', 'pix_fmt': 'yuv422p', 'width': 3840,
+                 'height': 2160, 'avg_frame_rate': '25/1'},
+                {'index': 1, 'codec_type': 'audio', 'codec_name': 'pcm_s24le'},
+            ],
+        }
+        settings = videotool.davinci_settings_from_reference(reference)
+        self.assertEqual((settings['name'], settings['encoder_profile'], settings['audio_codec']),
+                         ('DNxHR HQ', 'dnxhr_hq', 'pcm_s24le'))
+        with patch('videotool.shutil.which', return_value='ffmpeg'):
+            command = videotool.plan_davinci(self.source, self.folder / 'learned.mov',
+                                             self.metadata(), settings)
+        self.assertIn('dnxhr_hq', command)
+        self.assertIn('pcm_s24le', command)
+
+        inspect.return_value['streams'][0].update(profile='DNXHR LB', pix_fmt='yuv422p')
+        settings = videotool.davinci_settings_from_reference(reference)
+        self.assertEqual((settings['name'], settings['encoder_profile']), ('DNxHR LB', 'dnxhr_lb'))
+
+    @patch('videotool.inspect_video')
+    def test_reference_rejects_non_dnxhr_and_non_pcm(self, inspect):
+        reference = self.folder / 'reference.mov'
+        reference.write_bytes(b'reference')
+        inspect.return_value = {'streams': [
+            {'index': 0, 'codec_type': 'video', 'codec_name': 'h264',
+             'profile': 'High', 'pix_fmt': 'yuv420p'},
+        ]}
+        with self.assertRaisesRegex(videotool.VideoToolError, 'DNxHR'):
+            videotool.davinci_settings_from_reference(reference)
+        inspect.return_value = {'streams': [
+            {'index': 0, 'codec_type': 'video', 'codec_name': 'dnxhd',
+             'profile': 'DNXHR SQ', 'pix_fmt': 'yuv422p'},
+            {'index': 1, 'codec_type': 'audio', 'codec_name': 'aac'},
+        ]}
+        with self.assertRaisesRegex(videotool.VideoToolError, 'PCM'):
+            videotool.davinci_settings_from_reference(reference)
+
+    def test_storage_estimate_and_insufficient_space(self):
+        metadata = self.metadata()
+        metadata['format'] = {'duration': '60'}
+        metadata['streams'][0]['avg_frame_rate'] = '25/1'
+        estimate = videotool.estimate_davinci_size(metadata)
+        self.assertGreater(estimate, 0)
+        with patch('videotool.shutil.disk_usage') as usage:
+            usage.return_value.free = estimate - 1
+            with self.assertRaisesRegex(videotool.VideoToolError, 'exceeds available space'):
+                videotool.require_space(self.folder / 'output.mov', estimate)
+            usage.return_value.free = estimate
+            self.assertEqual(videotool.require_space(self.folder / 'output.mov', estimate), estimate)
+
+    def test_reference_rate_drives_estimate(self):
+        metadata = self.metadata()
+        metadata['format'] = {'duration': '20'}
+        settings = videotool.default_davinci_settings()
+        settings.update(reference_rate=80_000_000, reference_width=3840,
+                        reference_height=2160, reference_fps=25)
+        # Same dimensions/frame rate: 80 Mb/s for 20 seconds, plus 10% headroom.
+        self.assertAlmostEqual(videotool.estimate_davinci_size(metadata, settings),
+                               220_000_000, delta=1)
+
     @unittest.skipUnless(shutil.which('ffmpeg') and shutil.which('ffprobe'), 'FFmpeg required')
     def test_synthetic_conversion_and_ffmpeg_overwrite_refusal(self):
         # Only generated test media in the temporary test directory is processed.
@@ -237,7 +331,7 @@ class VideoToolTests(unittest.TestCase):
         self.assertEqual((video['codec_name'], video['profile'], video['pix_fmt']),
                          ('dnxhd', 'DNXHR HQX', 'yuv422p10le'))
         self.assertEqual((video['width'], video['height'], video['avg_frame_rate']), (256, 144, '25/1'))
-        self.assertEqual((audio['codec_name'], audio['sample_rate']), ('pcm_s24le', '48000'))
+        self.assertEqual((audio['codec_name'], audio['sample_rate']), ('pcm_s16le', '48000'))
         before = output.read_bytes()
         refused = subprocess.run(command, capture_output=True)
         self.assertIn(b'already exists', refused.stderr)

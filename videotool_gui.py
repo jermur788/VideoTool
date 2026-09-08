@@ -24,7 +24,7 @@ BUTTON_HINTS = {
     'Choose source': 'Choose one video file or a folder of videos. Folder subdirectories are not included.',
     'Choose reference': 'Choose a DNxHR MOV that you have already confirmed works in DaVinci.',
     'Use automatic': 'Choose DNxHR SQ for 8-bit footage and DNxHR HQX for 10-bit footage.',
-    'Output folder': 'Choose an existing folder for the converted videos.',
+    'Output folder': 'Choose an existing output folder or create a new one.',
     'Use originals’ folder': 'Save converted videos beside their source files.',
     'Preview': 'Check your footage and show the proposed output names. No videos are converted.',
     'Stop after current file': 'Let the current video finish, then stop. You can retry the unfinished files later.',
@@ -251,8 +251,9 @@ def plan_item(source, output, location='', preset='davinci', target_mb=380, davi
                            f"{videotool.frame_rate(video.get('avg_frame_rate'))} fps average\n"
                            f"{settings['name']} · {settings['bit_depth']}-bit 4:2:2 · "
                            f"{audio} audio stream(s), PCM {settings['audio_bits']}-bit\n"
-                           f"{origin}\nEstimated output: {videotool.readable_size(item.estimated_bytes)} "
-                           f"(10% headroom) · Free space: {videotool.readable_size(item.available_bytes)}\n"
+                           f"{origin}\nThis file: estimated {videotool.readable_size(item.estimated_bytes)} "
+                           f"(10% headroom) · Destination free space at preview: "
+                           f"{videotool.readable_size(item.available_bytes)}\n"
                            'Source frame timing, resolution, and known color tags retained.')
         if item.upload_plan:
             item.detail = item.upload_plan.detail
@@ -311,10 +312,30 @@ def storage_summary(items):
     estimates = [item.estimated_bytes for item in ready]
     estimated = sum(estimates) if all(value is not None for value in estimates) else None
     free = min((item.available_bytes for item in ready if item.available_bytes is not None), default=None)
-    text = f' Estimated output: {videotool.readable_size(estimated)}; free space: {videotool.readable_size(free)}.'
+    noun = 'file' if len(ready) == 1 else 'files'
+    text = (f'Estimated batch output for all {len(ready)} ready {noun}: {videotool.readable_size(estimated)} '
+            f'(includes 10% headroom per file) · Destination free space: {videotool.readable_size(free)}')
     if estimated is not None and free is not None and estimated > free:
-        text += ' Estimated output exceeds available space; conversion will be refused.'
+        text += (f' · Short by: {videotool.readable_size(estimated - free)}. '
+                 'The complete batch does not fit in the currently available space.')
+    elif estimated is not None and free is not None:
+        text += f' · Estimated space remaining after batch: {videotool.readable_size(free - estimated)}.'
+    else:
+        text += '.'
     return text
+
+
+def make_output_folder(parent, name):
+    parent = Path(parent).expanduser().resolve(strict=True)
+    if not parent.is_dir():
+        raise OSError('Choose an existing parent folder.')
+    name = str(name).strip()
+    if (not name or name in ('.', '..') or
+            any(c in '<>:"/\\|?*' or ord(c) < 32 for c in name)):
+        raise ValueError('Enter one folder name without slashes or special filename characters.')
+    target = parent / name
+    target.mkdir()
+    return target.resolve(strict=True)
 
 
 def open_output_folder(folder):
@@ -464,7 +485,7 @@ def convert(items, stop, report, report_progress=None, cancel=None, receipt_repo
 def main():
     try:
         import tkinter as tk
-        from tkinter import filedialog, messagebox, ttk
+        from tkinter import filedialog, messagebox, simpledialog, ttk
         from tkinter.scrolledtext import ScrolledText
     except ImportError:
         print('The window interface needs Tkinter. On Linux Mint/Ubuntu, run:\n'
@@ -515,6 +536,7 @@ def main():
     preset_note = tk.StringVar()
     naming_note = tk.StringVar()
     source_note = tk.StringVar(value='Folder mode scans one folder. Existing outputs are preserved.')
+    storage_text = tk.StringVar()
     status = tk.StringVar(value='Ready to choose footage.')
     state = {'source': None, 'folder': False, 'destination': None, 'items': [], 'busy': False,
              'messages': {}, 'reference': None, 'receipt': None, 'run_summary': '',
@@ -536,6 +558,8 @@ def main():
         batch_progress_text.set('Whole batch: waiting')
         progress['value'] = 0
         batch_progress['value'] = 0
+        storage_text.set('')
+        storage_banner.grid_remove()
         progress_frame.grid_remove()
         start_button.configure(state='disabled')
         retry_button.configure(state='disabled')
@@ -566,6 +590,23 @@ def main():
             state['destination'] = selected
             destination.set(selected)
             invalidate()
+
+    def create_destination():
+        parent = filedialog.askdirectory(parent=root, title='Choose where to create the output folder')
+        if not parent:
+            return
+        name = simpledialog.askstring('Create output folder', 'New folder name:', parent=root)
+        if name is None:
+            return
+        try:
+            selected = make_output_folder(parent, name)
+        except (OSError, ValueError) as exc:
+            messagebox.showerror('Cannot create output folder', str(exc), parent=root)
+            return
+        state['destination'] = str(selected)
+        destination.set(str(selected))
+        invalidate()
+        status.set(f'Created output folder: {selected}')
 
     def reset_destination():
         state['destination'] = None
@@ -662,11 +703,16 @@ def main():
                                                                         padx=(0, 12), pady=(8, 0))
     ttk.Entry(selection, textvariable=destination, state='readonly').grid(row=2, column=1, columnspan=2,
                                                                           sticky='ew', pady=(8, 0))
-    for column, (label, callback) in enumerate([('Output folder', choose_destination), ('Use originals’ folder', reset_destination)], 1):
-        button = ttk.Button(selection, text=label, command=callback)
-        button.grid(row=3, column=column, sticky='w', padx=(0 if column == 1 else 4, 0),
-                    pady=(6, 0))
-        controls.append(button)
+    output_button = ttk.Menubutton(selection, text='Output folder')
+    output_button.grid(row=3, column=1, sticky='w', pady=(6, 0))
+    output_menu = tk.Menu(output_button, tearoff=False)
+    output_menu.add_command(label='Choose existing folder', command=choose_destination)
+    output_menu.add_command(label='Create new folder', command=create_destination)
+    output_button.configure(menu=output_menu)
+    controls.append(output_button)
+    originals_button = ttk.Button(selection, text='Use originals’ folder', command=reset_destination)
+    originals_button.grid(row=3, column=2, sticky='w', padx=(4, 0), pady=(6, 0))
+    controls.append(originals_button)
     naming = ttk.Frame(selection)
     naming.grid(row=4, column=0, columnspan=3, sticky='ew', pady=(8, 0))
     naming.columnconfigure(1, weight=1)
@@ -753,9 +799,13 @@ def main():
     review = ttk.LabelFrame(body, text='3  Review files', style='Section.TLabelframe', padding=(10, 8))
     review.grid(row=3, sticky='nsew', pady=(0, 10))
     review.columnconfigure(0, weight=1)
-    review.rowconfigure(0, weight=1)
+    review.rowconfigure(1, weight=1)
+    storage_banner = ttk.Label(review, textvariable=storage_text, style='Status.TLabel',
+                               justify='left', wraplength=970)
+    storage_banner.grid(row=0, sticky='ew', pady=(0, 8))
+    storage_banner.grid_remove()
     table_frame = ttk.Frame(review)
-    table_frame.grid(row=0, sticky='nsew')
+    table_frame.grid(row=1, sticky='nsew')
     table_frame.columnconfigure(0, weight=1)
     table_frame.rowconfigure(0, weight=1)
     tree = ttk.Treeview(table_frame,
@@ -780,7 +830,7 @@ def main():
     tree.configure(yscrollcommand=scrollbar.set)
     details = ScrolledText(review, height=4, wrap='word', font=('Sans', 10), relief='flat',
                            borderwidth=1, padx=10, pady=8)
-    details.grid(row=1, sticky='ew', pady=(8, 0))
+    details.grid(row=2, sticky='ew', pady=(8, 0))
     details.configure(state='disabled')
 
     def show_details(event=None):
@@ -994,10 +1044,16 @@ def main():
                                             item.output.name, row_status), tags=(row_status,))
                     ready = sum(not item.error and not item.completed for item in data)
                     completed = sum(item.completed for item in data)
+                    batch_storage = storage_summary(data)
+                    storage_text.set(batch_storage)
+                    if batch_storage:
+                        storage_banner.grid()
+                    else:
+                        storage_banner.grid_remove()
                     busy(False)
                     file_progress_text.set('Current file: ready to convert' if ready else 'Current file: no ready files')
                     status.set(f'{ready} ready · {len(data) - ready - completed} blocked · {completed} already completed.'
-                               + storage_summary(data) + ' Review the list, then convert ready files.')
+                               + ' Review the list, then convert ready files.')
                     if ready:
                         start_button.configure(state='normal')
                     if data:

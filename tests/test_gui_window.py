@@ -57,7 +57,7 @@ class DesktopWorkflowTest(unittest.TestCase):
 
     def test_retry_continue_and_open_output(self):
         import tkinter as tk
-        from tkinter import ttk, filedialog, messagebox
+        from tkinter import ttk, filedialog, messagebox, simpledialog
         original_tk = tk.Tk
         original_execute = videotool.execute_davinci
         errors = []
@@ -95,6 +95,12 @@ class DesktopWorkflowTest(unittest.TestCase):
                             self.assertEqual(set(buttons), set(gui.BUTTON_HINTS))
                             for label, button in buttons.items():
                                 self.assertEqual(button.tooltip.text, gui.BUTTON_HINTS[label])
+                            output_menu = root.nametowidget(str(buttons['Output folder'].cget('menu')))
+                            self.assertEqual(output_menu.entrycget(0, 'label'), 'Choose existing folder')
+                            self.assertEqual(output_menu.entrycget(1, 'label'), 'Create new folder')
+                            output_menu.invoke(1)
+                            self.assertTrue((folder / 'New exports').is_dir())
+                            buttons['Use originals’ folder'].invoke()
                             root.nametowidget(str(buttons['Choose source'].cget('menu'))).invoke(1)
                             entry = next(w for w in widgets if isinstance(w, ttk.Entry) and str(w.cget('state')) == 'normal')
                             entry.insert(0, 'Dublin')
@@ -143,6 +149,7 @@ class DesktopWorkflowTest(unittest.TestCase):
                 root.after(100, check)
                 return root
             with patch('tkinter.Tk', create_root), patch.object(filedialog, 'askdirectory', return_value=str(folder)), \
+                    patch.object(simpledialog, 'askstring', return_value='New exports'), \
                     patch.object(messagebox, 'showerror', side_effect=lambda *a, **k: errors.append(a)), \
                     patch('videotool.execute_davinci', side_effect=execute), \
                     patch('videotool_gui.open_processing_receipt',

@@ -28,7 +28,8 @@ python3 videotool_gui.py
    For upload presets, choose finished DaVinci exports. DaVinci copies automatically preserve
    source bit depth. Open **Advanced settings** only when you want to use a DNxHR MOV that you
    have already confirmed works in Resolve as a format reference.
-2. Optionally choose an existing output folder; otherwise copies go beside the originals.
+2. Optionally open **Output folder** to choose an existing folder or create a new
+   folder inside a selected parent; otherwise copies go beside the originals.
 3. Optionally enter a location under **Name files by location**, such as `Dublin`, for names like
    `Dublin_001.mov`, `Dublin_002.mov`. Leave it blank to keep the default names.
 4. Click **Preview**. The list shows source size, duration, detected bit depth, output name,
@@ -105,6 +106,11 @@ across the list, including prior successes, and the destination path. **Open
 output folder** opens that folder in the desktop file manager (or the selected
 row's output folder if there is more than one). Progress percentages during a
 retry describe only the remaining ready files.
+
+For DaVinci folder previews, a storage banner identifies the number of ready files,
+their combined estimated output with headroom, destination free space, and the
+estimated remaining space or shortfall after the complete batch. The selected-row
+details label their smaller estimate as applying to that file only.
 
 Only files captured in the preview are converted. Changing the selection requires
 a new preview, and sources changed since inspection are refused. Existing outputs

@@ -1,5 +1,18 @@
 Test results — VideoTool
 
+## Folder storage total and destination creation — 2026-09-08
+
+- All 67 automated tests passed with the real desktop-display checks enabled.
+- DaVinci folder previews show a persistent batch banner with the ready-file count,
+  combined estimated output including headroom, destination free space, and the
+  estimated remaining space or shortfall. Selected-file details explicitly label
+  their estimate as applying only to that file.
+- The **Output folder** menu can choose an existing folder or create one inside a
+  selected parent. Tests cover safe creation, invalid names, existing-name refusal,
+  and the actual desktop menu workflow.
+- Only temporary generated or simulated media was processed. User footage and the
+  user's already-running conversion were not accessed, changed, or interrupted.
+
 ## Simplified desktop interface — 2026-09-06
 
 - All 65 automated tests passed with the real desktop-display checks enabled.

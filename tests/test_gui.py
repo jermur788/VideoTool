@@ -243,8 +243,31 @@ class GuiTests(unittest.TestCase):
             item = gui.preview(self.source, reference=reference)[0]
         self.assertEqual(item.davinci_settings['name'], 'DNxHR SQ')
         self.assertIn('Learned from working reference', item.detail)
-        self.assertIn('Estimated output:', item.detail)
-        self.assertIn('free space:', gui.storage_summary([item]))
+        self.assertIn('This file: estimated', item.detail)
+        summary = gui.storage_summary([item])
+        self.assertIn('Estimated batch output for all 1 ready file:', summary)
+        self.assertIn('Destination free space:', summary)
+        self.assertIn('Estimated space remaining after batch:', summary)
+
+    def test_folder_storage_summary_is_explicit_about_total_and_shortfall(self):
+        items = [gui.Conversion(self.source, self.folder / f'out-{number}.mov', [],
+                                estimated_bytes=600, available_bytes=1000)
+                 for number in range(2)]
+        summary = gui.storage_summary(items)
+        self.assertIn('Estimated batch output for all 2 ready files:', summary)
+        self.assertIn('includes 10% headroom per file', summary)
+        self.assertIn('Short by:', summary)
+        self.assertIn('complete batch does not fit', summary)
+
+    def test_make_output_folder_creates_one_safe_new_directory(self):
+        created = gui.make_output_folder(self.folder, 'New exports')
+        self.assertEqual(created, self.folder / 'New exports')
+        self.assertTrue(created.is_dir())
+        with self.assertRaises(FileExistsError):
+            gui.make_output_folder(self.folder, 'New exports')
+        for invalid in ('', '.', '..', 'nested/folder', 'bad:name'):
+            with self.assertRaises(ValueError):
+                gui.make_output_folder(self.folder, invalid)
 
     def test_automatic_preview_uses_hqx_for_10_bit_source(self):
         metadata = {**self.metadata, 'streams': [dict(self.metadata['streams'][0],

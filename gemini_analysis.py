@@ -47,6 +47,15 @@ class AnalysisResult:
     analysis_seconds: float
 
 
+@dataclass(frozen=True)
+class UploadedVideo:
+    remote: object
+    remote_name: str
+    remote_uri: str
+    upload_seconds: float
+    processing_seconds: float
+
+
 def _stored_api_key():
     try:
         import keyring
@@ -137,7 +146,7 @@ def _state_name(remote):
 
 def _check_cancel(cancel):
     if cancel is not None and cancel.is_set():
-        raise GeminiCancelled('Gemini analysis cancelled. The converted video was kept.')
+        raise GeminiCancelled('Gemini analysis cancelled. The local video was kept unchanged.')
 
 
 def _safe_error(exc):
@@ -193,7 +202,25 @@ def analyze(video, prompt, model=DEFAULT_MODEL, cancel=None, report=None, client
         raise GeminiError('A Gemini model is required.')
     client = client or _client()
     report = report or (lambda stage, message: None)
+    uploaded = upload_video(video, cancel, report, client, poll_interval, processing_timeout)
+    response_text, analysis_seconds = generate_for_file(
+        uploaded.remote, video.name, prompt, model, cancel, report, client)
+    return AnalysisResult(
+        text=response_text,
+        model=model,
+        remote_name=uploaded.remote_name,
+        remote_uri=uploaded.remote_uri,
+        upload_seconds=uploaded.upload_seconds,
+        processing_seconds=uploaded.processing_seconds,
+        analysis_seconds=analysis_seconds,
+    )
 
+
+def upload_video(video, cancel=None, report=None, client=None, poll_interval=5,
+                 processing_timeout=1800):
+    video = Path(video).resolve(strict=True)
+    client = client or _client()
+    report = report or (lambda stage, message: None)
     _check_cancel(cancel)
     report('Uploading', f'Uploading {video.name} to Gemini…')
     started = time.monotonic()
@@ -202,7 +229,6 @@ def analyze(video, prompt, model=DEFAULT_MODEL, cancel=None, report=None, client
     except Exception as exc:
         raise GeminiError(f'Gemini could not upload {video.name}: {_friendly_api_error(exc)}') from exc
     upload_seconds = time.monotonic() - started
-
     _check_cancel(cancel)
     report('Processing', f'Gemini is processing {video.name}…')
     processing_started = time.monotonic()
@@ -219,30 +245,28 @@ def analyze(video, prompt, model=DEFAULT_MODEL, cancel=None, report=None, client
         try:
             remote = client.files.get(name=remote.name)
         except Exception as exc:
-            raise GeminiError(
-                f'Gemini could not check the processing status for {video.name}: '
-                f'{_friendly_api_error(exc)}') from exc
-    processing_seconds = time.monotonic() - processing_started
+            raise GeminiError(f'Gemini could not check the processing status for {video.name}: '
+                              f'{_friendly_api_error(exc)}') from exc
+    return UploadedVideo(remote, str(getattr(remote, 'name', '') or ''),
+                         str(getattr(remote, 'uri', '') or ''), upload_seconds,
+                         time.monotonic() - processing_started)
 
+
+def generate_for_file(remote, video_name, prompt, model=DEFAULT_MODEL, cancel=None,
+                      report=None, client=None, label='Analyzing'):
+    client = client or _client()
+    report = report or (lambda stage, message: None)
     _check_cancel(cancel)
-    report('Analyzing', f'Gemini is analyzing {video.name} with the reviewed prompt…')
-    analysis_started = time.monotonic()
+    report(label, f'Gemini is analyzing {video_name} with the reviewed prompt…')
+    started = time.monotonic()
     try:
         response = client.models.generate_content(model=model, contents=[remote, prompt])
-        response_text = str(getattr(response, 'text', '') or '').strip()
+        text = str(getattr(response, 'text', '') or '').strip()
     except Exception as exc:
-        raise GeminiError(f'Gemini could not analyze {video.name}: {_friendly_api_error(exc)}') from exc
-    if not response_text:
-        raise GeminiError(f'Gemini returned an empty response for {video.name}.')
-    return AnalysisResult(
-        text=response_text,
-        model=model,
-        remote_name=str(getattr(remote, 'name', '') or ''),
-        remote_uri=str(getattr(remote, 'uri', '') or ''),
-        upload_seconds=upload_seconds,
-        processing_seconds=processing_seconds,
-        analysis_seconds=time.monotonic() - analysis_started,
-    )
+        raise GeminiError(f'Gemini could not analyze {video_name}: {_friendly_api_error(exc)}') from exc
+    if not text:
+        raise GeminiError(f'Gemini returned an empty response for {video_name}.')
+    return text, time.monotonic() - started
 
 
 def write_response(source, video, prompt, result, receipt_path=None, now=None):

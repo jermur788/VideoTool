@@ -14,7 +14,7 @@ from videotool_version import __version__
 
 
 APP_FILES = (
-    'conversion_history.py', 'gemini_analysis.py', 'health_checks.py',
+    'conversion_history.py', 'creator_benchmark.py', 'gemini_analysis.py', 'health_checks.py',
     'processing_receipts.py', 'tooltips.py', 'upload_presets.py',
     'user_settings.py', 'videotool.py', 'videotool_gui.py',
     'videotool_version.py', 'requirements-gemini.txt', 'README.md',

@@ -1,5 +1,26 @@
 Test results — VideoTool
 
+## Creator-review finished-video benchmark — 2026-09-11
+
+- The full 112-test non-live suite completed successfully. Five optional
+  display-dependent checks were skipped; all 13 dedicated creator-benchmark tests
+  passed.
+- Mocked benchmark tests verify that preview creates no report or Gemini client,
+  one upload object is reused for two sequential requests, cancellation is checked
+  before each stage, and cancellation after the baseline prevents request two.
+- Partial second-request failure preserves the baseline and an incomplete report.
+  Tests also cover configured-key redaction, atomic collision-safe three-file
+  result sets, unchanged source bytes, structured report-write failure, and
+  truthful benchmark action, cancellation, summary, and Stop-control behavior.
+- All five creator purposes have distinct focused prompts, output sections, and
+  relevant blank rubric criteria. Tests verify purpose persistence in preview, raw
+  creator output, and reports, plus per-purpose draft preservation and reset behavior.
+- The isolated desktop installer test confirms `creator_benchmark.py` is copied,
+  imports with the installed GUI, and the generated launcher reports healthy
+  version 0.8.0 state. It used temporary XDG and executable directories only.
+- No live Gemini request was made. No user media, real user installation,
+  credential, running app, commit, or remote state was accessed or changed.
+
 ## User-level desktop installation — 2026-09-11
 
 - The full 99-test suite completed successfully. Five optional display-dependent

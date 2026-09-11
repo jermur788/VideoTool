@@ -11,6 +11,22 @@ later stages, and online failures do not change a successful local conversion.
 The same interface can upload one supported original video directly, without
 running a conversion, and saves its response beside the original.
 
+The version 0.8.0 creator-review benchmark is implemented for one finished video.
+Its purpose selector offers Publishing package, Find Shorts, Review yoga sequence,
+Check final video, and Generate chapters. Each purpose supplies a focused editable
+prompt and report rubric, while per-purpose drafts prevent edits from being lost
+when switching. Preview discloses the purpose, one upload, two exact prompts, model,
+source, report location, and network boundary. The upload is reused for the baseline
+and creator-review requests; both raw responses and the purpose are preserved.
+Subjective ratings remain blank and measured operational values are identified.
+It remains a prompt/workflow test rather than scene/frame extraction, contact
+sheets, transcription, heavy AI dependencies, or raw-footage cataloguing.
+Cancellation prevents the next request, although an SDK request already in flight
+cannot be aborted. Remote Gemini cleanup and live testing remain future work; the
+current user project is Restricted and no live request has been made. The intended
+manual sequence is V2 yoga first and A01 Kinsale Bay later; neither has been inspected
+or processed during implementation.
+
 Desktop packaging is also implemented at version 0.7.0: a user-level installer
 adds an application-menu launcher and scalable icon, the About panel reports the
 version and local readiness, updates replace only a recognized managed install,

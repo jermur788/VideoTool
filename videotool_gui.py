@@ -13,6 +13,7 @@ import os
 import sqlite3
 from urllib.parse import unquote, urlparse
 import conversion_history
+import creator_benchmark
 import gemini_analysis
 import health_checks
 import processing_receipts
@@ -48,9 +49,13 @@ BUTTON_HINTS = {
     'View processing receipt': 'Open the Markdown record for the latest completed conversion run.',
     'Copy summary': 'Copy the latest run counts, elapsed time, and receipt location.',
     'Restore default prompt': 'Replace the prompt with VideoTool’s default video-summary prompt.',
+    'Restore purpose prompt': 'Restore the focused default prompt for the selected creator purpose.',
     'View Gemini response': 'Open the latest Gemini response saved as Markdown beside the prepared video.',
     'Gemini key…': 'Save, replace, or remove the Gemini API key in your system password store.',
     'Upload original to Gemini': 'Upload the selected video to Gemini without converting or changing it.',
+    'Run creator benchmark': 'Upload one finished video once and compare the baseline and creator-review prompts.',
+    'Cancel Gemini benchmark': 'Stop before the next Gemini stage. A request already in progress must finish first.',
+    'View benchmark report': 'Open the local Markdown comparison report saved beside the finished video.',
     'Copy error/details': 'Copy the selected video’s full status and error details to the clipboard.',
 }
 
@@ -91,6 +96,8 @@ class Conversion:
     gemini_response_path: object = None
     gemini_remote_name: str = ''
     direct_upload: bool = False
+    creator_benchmark: bool = False
+    creator_purpose: str = ''
 
     def __post_init__(self):
         if self.executed_commands is None:
@@ -147,6 +154,29 @@ def review_output_size(item):
         except OSError:
             return '—'
     return f'~{videotool.readable_size(item.estimated_bytes)}' if item.estimated_bytes else '—'
+
+
+def gemini_action_text(benchmark=False):
+    return 'Run creator benchmark' if benchmark else 'Upload original to Gemini'
+
+
+def cancel_status_text(benchmark=False, direct=False):
+    if benchmark:
+        return ('Cancelling the Gemini benchmark… The local video stays unchanged. '
+                'A Gemini request already in progress must finish before cancellation takes effect.')
+    if direct:
+        return ('Cancelling Gemini analysis… The original video stays unchanged. '
+                'A request already in progress must finish before cancellation takes effect.')
+    return 'Cancelling the current conversion… Converted videos and any partial output will be kept.'
+
+
+def interrupt_controls(benchmark=False, direct=False):
+    """Return the truthful label, cancel action, and stop-button visibility."""
+    if benchmark:
+        return 'Gemini benchmark controls', 'Cancel Gemini benchmark', False
+    if direct:
+        return 'Gemini controls', 'Cancel current conversion', True
+    return 'Conversion controls', 'Cancel current conversion', True
 
 
 def about_text(checks=None):
@@ -377,10 +407,14 @@ def completion_summary(items):
         analyzed = sum(bool(item.gemini_response_path) for item in items)
         online_failed = sum(item.gemini_status == 'Failed' for item in items)
         online_cancelled = sum(item.gemini_status == 'Cancelled' for item in items)
-        title = ('Gemini analysis complete' if analyzed and not online_failed and not online_cancelled
-                 else 'Gemini analysis needs attention')
+        benchmark = bool(items[0].creator_benchmark)
+        title = (('Creator benchmark complete' if analyzed and not online_failed and not online_cancelled
+                  else 'Creator benchmark needs attention') if benchmark else
+                 ('Gemini analysis complete' if analyzed and not online_failed and not online_cancelled
+                  else 'Gemini analysis needs attention'))
+        result_label = 'Benchmark report' if benchmark else 'Gemini'
         text = (f'{title}: original video kept unchanged.\nFile: {items[0].source}\n'
-                f'Gemini: {analyzed} response(s) saved locally · {online_failed} failed · '
+                f'{result_label}: {analyzed} saved locally · {online_failed} failed · '
                 f'{online_cancelled} cancelled.')
         if online_failed or online_cancelled:
             text += '\nSelect the video and use Copy error/details for the full error.'
@@ -701,6 +735,9 @@ def main():
     advanced_reference = tk.BooleanVar(value=False)
     analyze_with_gemini = tk.BooleanVar(value=False)
     direct_gemini_upload = tk.BooleanVar(value=False)
+    creator_benchmark_mode = tk.BooleanVar(value=False)
+    creator_purpose = tk.StringVar(value=creator_benchmark.DEFAULT_PURPOSE)
+    creator_prompt_drafts = creator_benchmark.PromptDrafts()
     gemini_readiness = tk.StringVar()
     preset_note = tk.StringVar()
     naming_note = tk.StringVar()
@@ -740,7 +777,8 @@ def main():
         progress_frame.grid_remove()
         start_button.configure(state='disabled')
         direct_button.configure(state='disabled')
-        if selected_preset() == 'aistudio' and direct_gemini_upload.get():
+        if (selected_preset() == 'aistudio' and
+                (direct_gemini_upload.get() or creator_benchmark_mode.get())):
             start_button.grid_remove()
             direct_button.grid()
         else:
@@ -981,8 +1019,15 @@ def main():
     controls.append(direct_upload_toggle)
     Tooltip(direct_upload_toggle,
             'Send the selected original video to Gemini exactly as it is, without running FFmpeg.')
+    creator_benchmark_toggle = ttk.Checkbutton(
+        gemini_options, text='Compare baseline with creator review (finished video)',
+        variable=creator_benchmark_mode)
+    creator_benchmark_toggle.grid(row=3, column=0, columnspan=2, sticky='w', pady=(7, 0))
+    controls.append(creator_benchmark_toggle)
+    Tooltip(creator_benchmark_toggle,
+            'Upload one finished video once, request two analyses, and save a comparison report.')
     prompt_options = ttk.Frame(gemini_options)
-    prompt_options.grid(row=3, column=0, columnspan=2, sticky='ew', pady=(8, 0))
+    prompt_options.grid(row=4, column=0, columnspan=2, sticky='ew', pady=(8, 0))
     prompt_options.columnconfigure(0, weight=1)
     ttk.Label(prompt_options, text='Prompt sent with this video', style='Field.TLabel').grid(
         row=0, column=0, sticky='w')
@@ -994,8 +1039,54 @@ def main():
     prompt_text.grid(row=1, column=0, columnspan=2, sticky='ew', pady=(6, 0))
     prompt_text.insert('1.0', gemini_analysis.DEFAULT_PROMPT)
 
+    creator_prompt_options = ttk.Frame(gemini_options)
+    creator_prompt_options.grid(row=5, column=0, columnspan=2, sticky='ew', pady=(8, 0))
+    creator_prompt_options.columnconfigure(0, weight=1)
+    purpose_row = ttk.Frame(creator_prompt_options)
+    purpose_row.grid(row=0, column=0, sticky='ew')
+    purpose_row.columnconfigure(1, weight=1)
+    ttk.Label(purpose_row, text='Analysis purpose', style='Field.TLabel').grid(
+        row=0, column=0, sticky='w', padx=(0, 10))
+    creator_purpose_box = ttk.Combobox(
+        purpose_row, textvariable=creator_purpose, values=creator_benchmark.purpose_names(),
+        state='readonly', width=28)
+    creator_purpose_box.grid(row=0, column=1, sticky='w')
+    controls.append(creator_purpose_box)
+    ttk.Label(creator_prompt_options, text='Creator-review prompt', style='Field.TLabel').grid(
+        row=1, column=0, sticky='w', pady=(8, 0))
+    restore_creator_prompt_button = ttk.Button(
+        creator_prompt_options, text='Restore purpose prompt')
+    restore_creator_prompt_button.grid(row=1, column=0, sticky='e', pady=(8, 0))
+    controls.append(restore_creator_prompt_button)
+    creator_prompt_text = ScrolledText(creator_prompt_options, height=6, wrap='word', font=('Sans', 10),
+                                       borderwidth=1, padx=10, pady=8)
+    creator_prompt_text.grid(row=2, column=0, sticky='ew', pady=(6, 0))
+    creator_prompt_text.insert('1.0', creator_benchmark.purpose_prompt())
+
     def current_prompt():
         return prompt_text.get('1.0', 'end-1c').strip()
+
+    def current_creator_prompt():
+        return creator_prompt_text.get('1.0', 'end-1c').strip()
+
+    def replace_creator_prompt(text):
+        creator_prompt_text.delete('1.0', 'end')
+        creator_prompt_text.insert('1.0', text)
+
+    def creator_prompt_edited(event=None):
+        creator_prompt_drafts.save(current_creator_prompt())
+        invalidate()
+
+    def creator_purpose_changed(*args):
+        text = creator_prompt_drafts.switch(current_creator_prompt(), creator_purpose.get())
+        replace_creator_prompt(text)
+        status.set(f'Using the saved or default prompt for {creator_purpose.get()}.')
+        invalidate()
+
+    def restore_creator_prompt():
+        replace_creator_prompt(creator_prompt_drafts.reset())
+        status.set(f'Restored the default {creator_purpose.get()} prompt.')
+        invalidate()
 
     def restore_default_prompt():
         prompt_text.delete('1.0', 'end')
@@ -1003,25 +1094,37 @@ def main():
         invalidate()
 
     restore_prompt_button.configure(command=restore_default_prompt)
+    restore_creator_prompt_button.configure(command=restore_creator_prompt)
     prompt_text.bind('<FocusOut>', lambda event: invalidate(), add='+')
+    creator_prompt_text.bind('<FocusOut>', creator_prompt_edited, add='+')
 
     def show_gemini_prompt(*args):
-        online = analyze_with_gemini.get() or direct_gemini_upload.get()
-        direct = selected_preset() == 'aistudio' and direct_gemini_upload.get()
+        benchmark = creator_benchmark_mode.get()
+        online = analyze_with_gemini.get() or direct_gemini_upload.get() or benchmark
+        direct = selected_preset() == 'aistudio' and (direct_gemini_upload.get() or benchmark)
         if selected_preset() == 'aistudio' and online:
             prompt_options.grid()
         else:
             prompt_options.grid_remove()
+        if selected_preset() == 'aistudio' and benchmark:
+            creator_prompt_options.grid()
+        else:
+            creator_prompt_options.grid_remove()
         if direct:
             target_options.grid_remove()
-            preset_note.set('Upload one selected original video directly to Gemini. No conversion will run.\n'
-                            'The Gemini response will be saved beside the original.')
+            if benchmark:
+                preset_note.set('Benchmark one finished video: one upload, then two Gemini analyses. No conversion will run.\n'
+                                'Raw responses and a comparison report will be saved beside the original.')
+            else:
+                preset_note.set('Upload one selected original video directly to Gemini. No conversion will run.\n'
+                                'The Gemini response will be saved beside the original.')
             selection.configure(text='2  Choose one video')
             for widget in (destination_label, destination_entry, output_button, originals_button, naming):
                 widget.grid_remove()
             source_menu.entryconfigure(1, state='disabled')
             source_note.set('Choose or drop one video. The original will remain unchanged.')
-            subtitle.set('Choose one video, review the prompt, then upload it to Gemini.')
+            subtitle.set('Choose one finished video, review both prompts, then run the benchmark.' if benchmark else
+                         'Choose one video, review the prompt, then upload it to Gemini.')
             tree.heading('output', text='Upload file')
         elif selected_preset() == 'aistudio':
             target_options.grid()
@@ -1042,10 +1145,19 @@ def main():
         gemini_readiness.set(readiness_text)
         if not state['busy']:
             restore_prompt_button.configure(state='normal' if online else 'disabled')
+            restore_creator_prompt_button.configure(state='normal' if benchmark else 'disabled')
+            creator_purpose_box.configure(state='readonly' if benchmark else 'disabled')
             direct_upload_toggle.configure(state='normal')
-            direct = selected_preset() == 'aistudio' and direct_gemini_upload.get()
+            creator_benchmark_toggle.configure(state='normal')
             for widget in destination_controls:
                 widget.configure(state='disabled' if direct else 'normal')
+            direct_button.configure(text=gemini_action_text(benchmark))
+            if hasattr(direct_button, 'tooltip'):
+                direct_button.tooltip.text = BUTTON_HINTS[str(direct_button.cget('text'))]
+            view_gemini_button.configure(text='View benchmark report' if benchmark else
+                                         'View Gemini response')
+            if hasattr(view_gemini_button, 'tooltip'):
+                view_gemini_button.tooltip.text = BUTTON_HINTS[str(view_gemini_button.cget('text'))]
 
     def save_gemini_key():
         value = simpledialog.askstring(
@@ -1073,14 +1185,23 @@ def main():
     gemini_key_menu.add_command(label='Remove saved key', command=remove_gemini_key)
 
     def gemini_option_changed(*args):
-        if analyze_with_gemini.get() and direct_gemini_upload.get():
+        if analyze_with_gemini.get() and (direct_gemini_upload.get() or creator_benchmark_mode.get()):
             direct_gemini_upload.set(False)
+            creator_benchmark_mode.set(False)
         show_gemini_prompt()
         invalidate()
 
     def direct_upload_changed(*args):
-        if direct_gemini_upload.get() and analyze_with_gemini.get():
+        if direct_gemini_upload.get():
             analyze_with_gemini.set(False)
+            creator_benchmark_mode.set(False)
+        show_gemini_prompt()
+        invalidate()
+
+    def creator_benchmark_changed(*args):
+        if creator_benchmark_mode.get():
+            analyze_with_gemini.set(False)
+            direct_gemini_upload.set(False)
         show_gemini_prompt()
         invalidate()
 
@@ -1096,7 +1217,7 @@ def main():
             candidate = Path(raw).expanduser().resolve(strict=True)
             if not candidate.is_file() and not candidate.is_dir():
                 raise OSError('Drop one video file or one folder.')
-            if direct_gemini_upload.get() and candidate.is_dir():
+            if (direct_gemini_upload.get() or creator_benchmark_mode.get()) and candidate.is_dir():
                 raise OSError('Direct Gemini upload accepts one video file, not a folder.')
             set_source(candidate, candidate.is_dir())
             if len(candidates) > 1:
@@ -1247,7 +1368,7 @@ def main():
         state['busy'] = value
         for button in controls:
             button.configure(state='disabled' if value else ('readonly' if isinstance(button, ttk.Combobox) else 'normal'))
-        direct = selected_preset() == 'aistudio' and direct_gemini_upload.get()
+        direct = selected_preset() == 'aistudio' and (direct_gemini_upload.get() or creator_benchmark_mode.get())
         size_entry.configure(state='normal' if not value and selected_preset() == 'aistudio' and not direct else 'disabled')
         for widget in destination_controls:
             widget.configure(state='disabled' if value or direct else 'normal')
@@ -1255,9 +1376,15 @@ def main():
             widget.configure(state=('readonly' if widget is reference_entry else 'normal')
                              if not value and selected_preset() == 'davinci' else 'disabled')
         prompt_text.configure(state='disabled' if value else 'normal')
-        online = analyze_with_gemini.get() or direct_gemini_upload.get()
+        online = analyze_with_gemini.get() or direct_gemini_upload.get() or creator_benchmark_mode.get()
         restore_prompt_button.configure(state='disabled' if value or not online else 'normal')
         direct_upload_toggle.configure(state='disabled' if value else 'normal')
+        creator_benchmark_toggle.configure(state='disabled' if value else 'normal')
+        creator_purpose_box.configure(state='disabled' if value or not creator_benchmark_mode.get()
+                                      else 'readonly')
+        restore_creator_prompt_button.configure(
+            state='disabled' if value or not creator_benchmark_mode.get() else 'normal')
+        creator_prompt_text.configure(state='disabled' if value else 'normal')
         start_button.configure(state='disabled')
         direct_button.configure(state='disabled')
         retry_button.configure(state='disabled')
@@ -1288,9 +1415,12 @@ def main():
         status.set('Inspecting footage…')
         args = (state['source'], state['folder'], state['destination'], location.get(), selected_preset(),
                 target_size.get(), state['reference'])
-        online = (analyze_with_gemini.get() or direct_gemini_upload.get()) and selected_preset() == 'aistudio'
-        direct = online and direct_gemini_upload.get()
+        benchmark = creator_benchmark_mode.get() and selected_preset() == 'aistudio'
+        online = (analyze_with_gemini.get() or direct_gemini_upload.get() or benchmark) and selected_preset() == 'aistudio'
+        direct = online and (direct_gemini_upload.get() or benchmark)
         reviewed_prompt = current_prompt()
+        reviewed_creator_prompt = current_creator_prompt()
+        reviewed_purpose = creator_purpose.get()
         def worker():
             try:
                 items = [preview_direct_gemini(args[0], args[1])] if direct else preview(*args)
@@ -1303,9 +1433,16 @@ def main():
                         item.gemini_requested = True
                         item.gemini_prompt = reviewed_prompt
                         item.gemini_model = gemini_analysis.DEFAULT_MODEL
-                        timing = 'without conversion' if direct else 'after conversion'
-                        item.detail += (f'\nGemini upload enabled for this video {timing} · Model: '
-                                        f'{gemini_analysis.DEFAULT_MODEL}\nPrompt:\n{reviewed_prompt}')
+                        item.creator_benchmark = benchmark
+                        item.creator_purpose = reviewed_purpose if benchmark else ''
+                        if benchmark:
+                            item.detail += '\n' + creator_benchmark.preview_text(
+                                item.source, gemini_analysis.DEFAULT_MODEL, reviewed_prompt,
+                                reviewed_creator_prompt, reviewed_purpose)
+                        else:
+                            timing = 'without conversion' if direct else 'after conversion'
+                            item.detail += (f'\nGemini upload enabled for this video {timing} · Model: '
+                                            f'{gemini_analysis.DEFAULT_MODEL}\nPrompt:\n{reviewed_prompt}')
                 events.put(('preview', items))
             except Exception as exc:
                 events.put(('error', str(exc)))
@@ -1361,12 +1498,19 @@ def main():
         status.set('Full details copied to the clipboard.')
 
     def do_convert():
-        online = (analyze_with_gemini.get() or direct_gemini_upload.get()) and selected_preset() == 'aistudio'
+        benchmark = creator_benchmark_mode.get() and selected_preset() == 'aistudio'
+        online = (analyze_with_gemini.get() or direct_gemini_upload.get() or benchmark) and selected_preset() == 'aistudio'
         direct = bool(state['items'] and len(state['items']) == 1 and state['items'][0].direct_upload)
         reviewed_prompt = current_prompt()
+        reviewed_creator_prompt = current_creator_prompt()
+        reviewed_purpose = creator_purpose.get()
         if online and not reviewed_prompt:
             messagebox.showerror('Enter a Gemini prompt',
                                  'Paste or type the prompt to send with each video.', parent=root)
+            return
+        if benchmark and not reviewed_creator_prompt:
+            messagebox.showerror('Enter a creator-review prompt',
+                                 'Paste or type the creator-review prompt.', parent=root)
             return
         if online:
             ready, readiness_text = gemini_analysis.readiness()
@@ -1386,7 +1530,17 @@ def main():
         interrupt_actions.grid()
         stop_button.configure(state='normal')
         cancel_button.configure(state='normal')
-        status.set('Starting Gemini upload…' if direct else 'Starting conversion…')
+        status.set('Starting creator benchmark…' if benchmark else
+                   ('Starting Gemini upload…' if direct else 'Starting conversion…'))
+        controls_label, cancel_label, show_stop = interrupt_controls(benchmark, direct)
+        interrupt_label.configure(text=controls_label)
+        cancel_button.configure(text=cancel_label)
+        if hasattr(cancel_button, 'tooltip'):
+            cancel_button.tooltip.text = BUTTON_HINTS[cancel_label]
+        if not show_stop:
+            stop_button.pack_forget()
+        elif not stop_button.winfo_manager():
+            stop_button.pack(side='left', padx=5, before=cancel_button)
         items = tuple(state['items'])
         def worker():
             try:
@@ -1407,7 +1561,22 @@ def main():
                     result = convert(items, stop, lambda *data: events.put(('progress', data)),
                                      lambda *data: events.put(('percent', data)), cancel,
                                      receipt_ready)
-                if online and any(item.completed_this_run for item in items):
+                if benchmark:
+                    item = items[0]
+                    benchmark_result = creator_benchmark.run(
+                        item.source, reviewed_prompt, reviewed_creator_prompt,
+                        gemini_analysis.DEFAULT_MODEL, cancel,
+                        lambda *data: events.put(('progress', (0, *data))),
+                        purpose=reviewed_purpose)
+                    item.gemini_requested = True
+                    item.gemini_prompt = reviewed_prompt
+                    item.gemini_model = gemini_analysis.DEFAULT_MODEL
+                    item.creator_purpose = reviewed_purpose
+                    item.gemini_response_path = benchmark_result.report_path
+                    item.gemini_status = 'Failed' if benchmark_result.error else 'Saved'
+                    item.gemini_error = benchmark_result.error
+                    events.put(('benchmark', benchmark_result))
+                elif online and any(item.completed_this_run for item in items):
                     saved, online_failed = analyze_completed(
                         items, reviewed_prompt, gemini_analysis.DEFAULT_MODEL, cancel,
                         lambda *data: events.put(('progress', data)), receipt_holder['path'])
@@ -1427,7 +1596,9 @@ def main():
         stop.set()
         cancel_button.configure(state='disabled')
         stop_button.configure(state='disabled')
-        status.set('Cancelling the current operation… Converted videos and any partial output will be kept.')
+        benchmark = creator_benchmark_mode.get() and selected_preset() == 'aistudio'
+        direct = selected_preset() == 'aistudio' and direct_gemini_upload.get()
+        status.set(cancel_status_text(benchmark, direct))
 
     review_actions = ttk.Frame(actions)
     review_actions.grid(row=0, column=0, sticky='w')
@@ -1446,8 +1617,8 @@ def main():
 
     interrupt_actions = ttk.Frame(actions)
     interrupt_actions.grid(row=1, column=0, columnspan=3, sticky='e', pady=(7, 0))
-    ttk.Label(interrupt_actions, text='Conversion controls', style='Muted.TLabel').pack(side='left',
-                                                                                       padx=(0, 8))
+    interrupt_label = ttk.Label(interrupt_actions, text='Conversion controls', style='Muted.TLabel')
+    interrupt_label.pack(side='left', padx=(0, 8))
     stop_button = ttk.Button(interrupt_actions, text='Stop after current file', command=request_stop,
                              state='disabled')
     stop_button.pack(side='left', padx=5)
@@ -1621,6 +1792,20 @@ def main():
                         view_gemini_button.configure(state='normal')
                         result_actions.grid()
                         view_gemini_button.grid()
+                elif kind == 'benchmark':
+                    result = data
+                    state['gemini_response'] = result.report_path
+                    state['run_summary'] = (f'Creator benchmark report: {result.report_path}'
+                                            if result.report_path else
+                                            f'Creator benchmark report was not saved: {result.error}')
+                    view_gemini_button.configure(state='normal' if result.report_path else 'disabled')
+                    copy_summary_button.configure(state='normal')
+                    result_actions.grid()
+                    if result.report_path:
+                        view_gemini_button.grid()
+                    else:
+                        view_gemini_button.grid_remove()
+                    copy_summary_button.grid()
                 elif kind == 'error':
                     busy(False)
                     file_progress_text.set('Current file: operation failed')
@@ -1657,6 +1842,8 @@ def main():
     advanced_reference.trace_add('write', show_advanced_reference)
     analyze_with_gemini.trace_add('write', gemini_option_changed)
     direct_gemini_upload.trace_add('write', direct_upload_changed)
+    creator_benchmark_mode.trace_add('write', creator_benchmark_changed)
+    creator_purpose.trace_add('write', creator_purpose_changed)
     preset_name.trace_add('write', mode_changed)
     target_size.trace_add('write', lambda *args: invalidate())
     mode_changed()

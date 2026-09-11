@@ -2,10 +2,12 @@ import json
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 
 import desktop_install
+from videotool_version import __version__
 
 
 class DesktopInstallTests(unittest.TestCase):
@@ -35,6 +37,16 @@ class DesktopInstallTests(unittest.TestCase):
         self.assertIn("APP_DIR='", launcher)
         manifest = json.loads((installed['app'] / desktop_install.MANIFEST).read_text())
         self.assertEqual(manifest['application'], 'VideoTool')
+        self.assertIn('creator_benchmark.py', manifest['app_files'])
+        self.assertTrue((installed['app'] / 'creator_benchmark.py').is_file())
+        imported = subprocess.run(
+            [sys.executable, '-B', '-c',
+             'import creator_benchmark, videotool_gui; print(videotool_gui.__version__)'],
+            cwd=installed['app'], text=True, capture_output=True, check=True)
+        self.assertEqual(imported.stdout.strip(), __version__)
+        health = subprocess.run([str(installed['launcher']), '--health'], text=True,
+                                capture_output=True, check=True)
+        self.assertIn(f'VideoTool {__version__}', health.stdout)
 
         (installed['app'] / 'README.md').write_text('old installed copy', encoding='utf-8')
         unrelated = installed['app'] / 'my-note.txt'

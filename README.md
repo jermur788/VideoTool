@@ -253,14 +253,57 @@ original remains unchanged, and the Markdown response is saved beside it. Direct
 upload accepts the video formats currently listed by Gemini, including MP4, MOV,
 MPEG, AVI, FLV, WebM, WMV, and 3GPP.
 
+For a finished DaVinci export, enable **Compare baseline with creator review
+(finished video)**. Preview shows the exact local video, Gemini model, both editable
+prompts, one planned upload, two planned model requests, and the local report
+destination. Preview is local: no Gemini client or network request starts until
+you press **Run creator benchmark**. The source is uploaded once and reused first
+with the normal summary prompt, then with a creator-review prompt focused on
+the selected **Analysis purpose**:
+
+- **Publishing package** — titles, description, chapters, thumbnail concepts and
+  candidate frames, and Shorts opportunities;
+- **Find Shorts** — ranked timestamped clips, hooks, titles, edit requirements,
+  and useful candidate frames;
+- **Review yoga sequence** — poses, transitions, repeated sides, sequence coverage,
+  visible clarity, and uncertain identifications;
+- **Check final video** — confirmed issues, optional improvements, and prioritized
+  fixes across pacing, continuity, clarity, audio, visuals, text, and structure;
+- **Generate chapters** — complete, useful chapters with meaningful boundaries,
+  specific titles, and short descriptions.
+
+Both prompts remain editable. VideoTool keeps a separate creator-prompt draft for
+each purpose when you switch between them. **Restore purpose prompt** resets only
+the currently selected purpose. No conversion runs and the source stays in place.
+
+The benchmark saves separate baseline and creator-review Markdown responses plus
+a comparison report beside the source. Names are collision-safe, completed results
+survive a later failure, and the report includes measured timings, upload size,
+request counts, the selected purpose, both exact prompts, and a focused blank human
+rating table. Across the purposes, the rubric covers timestamp accuracy,
+completeness, pose/content recognition, chapter usefulness, publishing copy,
+thumbnail candidates, Shorts, hallucinations, creator corrections, hands-on time,
+processing time, upload friction, and repeatability where relevant. Subjective
+scores remain blank; only measured values are filled automatically. The comparison
+tests prompts and workflow; it does not add scene extraction, frame extraction,
+contact sheets, local transcription, heavy AI dependencies, or raw-footage
+cataloguing. **Cancel Gemini benchmark** prevents the next online stage.
+A Gemini SDK request already in progress must return before cancellation takes
+effect. Uploaded Gemini files are currently left to Gemini's service retention;
+VideoTool does not issue remote cleanup requests.
+
 The current default model is `gemini-3.8-flash`. Set `VIDEOTOOL_GEMINI_MODEL`
 before starting the app to use another model. Every non-empty response is saved
 beside the MP4 as `VideoTool-Gemini-...md`, and **View Gemini response** opens the
 latest file. Upload, processing, or model errors leave the converted MP4 marked
 successful. Select the video and use **Copy error/details** to copy the complete
-failure message for troubleshooting. The existing cancel button prevents later Gemini stages from starting.
+failure message for troubleshooting. The cancel control prevents later Gemini stages from starting.
 Gemini use is subject to the quota, billing, and data handling of the Google API
-project associated with the key.
+project associated with the key. Benchmark reports require the source folder to be
+writable. A project shown as **Restricted** in Google AI Studio must be resolved or
+replaced with an eligible active project before VideoTool can call Gemini.
+The intended first manual benchmark is the V2 yoga finished video, followed later
+by A01 Kinsale Bay. Neither source is used by automated tests or implementation checks.
 
 ### AI Studio size target
 

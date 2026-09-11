@@ -8,6 +8,66 @@ The desktop window can optionally upload prepared MP4 files to Gemini with an
 editable prompt. Google Drive delivery is the next planned stage in
 [NEXT_VERSION.md](NEXT_VERSION.md).
 
+## Install the desktop app
+
+On Linux Mint or Ubuntu, install VideoTool for your own user account from this
+folder:
+
+```bash
+python3 install-videotool.py
+```
+
+This adds the VideoTool icon to the application menu and a `videotool` launcher
+under `~/.local/bin`. It copies only the application code and documentation into
+the standard user data directory. It does not use `sudo`, install system-wide
+files, copy footage, or include credentials, caches, histories, receipts, or
+generated videos. After installation, launch **VideoTool** from the application
+menu without opening a terminal or VS Code. If the menu does not refresh
+immediately, sign out and back in once.
+
+To install the optional Gemini Python packages at the same time, use:
+
+```bash
+python3 install-videotool.py --with-gemini
+```
+
+That optional flag creates an isolated environment inside the managed VideoTool
+installation and downloads the packages listed in `requirements-gemini.txt`. The
+API key is still entered later through **Gemini key…** and remains in the operating
+system password store. A package-download failure leaves the local conversion app
+installed and allows a later retry.
+
+The application menu provides **Help → About VideoTool**, which shows the installed
+app version and readiness for Python, Tkinter, FFmpeg, ffprobe, and optional Gemini
+support. The same read-only report is available with:
+
+```bash
+videotool --health
+```
+
+After downloading or pulling a newer VideoTool source folder, update only the
+managed installation with:
+
+```bash
+python3 install-videotool.py --update
+```
+
+Add `--with-gemini` if the optional packages should also be installed or refreshed.
+The updater refuses to overwrite an unrecognized installation and never downloads
+new VideoTool source code by itself, making the version being installed explicit.
+
+Uninstall the managed app, launcher, menu entry, icon, and installer-created
+environment with:
+
+```bash
+videotool-uninstall
+```
+
+Your VideoTool preferences and securely saved Gemini key are preserved. To also
+remove the non-secret preferences, use `videotool-uninstall --remove-settings`.
+The key remains in the system password store; remove it through **Gemini key…**
+before uninstalling if you do not want to retain it.
+
 ## Desktop window
 
 Hover over any button for a short explanation, including buttons that are currently

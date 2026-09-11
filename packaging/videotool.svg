@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="VideoTool">
+  <defs>
+    <linearGradient id="bg" x1="18" y1="14" x2="108" y2="116" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#1e7f73"/>
+      <stop offset="1" stop-color="#155467"/>
+    </linearGradient>
+  </defs>
+  <rect x="8" y="8" width="112" height="112" rx="25" fill="url(#bg)"/>
+  <path d="M29 35h70v58H29z" fill="#f7fafb" opacity=".96"/>
+  <path d="M29 35h70v12H29zm0 46h70v12H29z" fill="#dbe7ea"/>
+  <g fill="#155467">
+    <path d="M36 38h7v6h-7zm14 0h7v6h-7zm14 0h7v6h-7zm14 0h7v6h-7zm14 0h7v6h-7z"/>
+    <path d="M36 84h7v6h-7zm14 0h7v6h-7zm14 0h7v6h-7zm14 0h7v6h-7zm14 0h7v6h-7z"/>
+  </g>
+  <path d="M55 55v25l21-12.5z" fill="#f0a34a"/>
+  <path d="M79 53l14 14-14 14v-9H67v-10h12z" fill="#1e7f73"/>
+</svg>

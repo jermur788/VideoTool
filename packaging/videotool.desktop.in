@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=VideoTool
+GenericName=Video preparation tool
+Comment=Prepare videos for DaVinci Resolve, uploads, and Gemini analysis
+Exec=@EXEC@
+Icon=videotool
+Terminal=false
+Categories=AudioVideo;Video;
+Keywords=video;ffmpeg;DaVinci;Gemini;YouTube;
+StartupNotify=true

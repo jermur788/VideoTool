@@ -1,5 +1,22 @@
 Test results — VideoTool
 
+## User-level desktop installation — 2026-09-11
+
+- The full 99-test suite completed successfully. Five optional display-dependent
+  checks were skipped because the run did not open the live desktop interface.
+- Installer tests used isolated temporary XDG data, configuration, and executable
+  directories, including paths containing spaces. They cover first installation,
+  managed update, unmanaged-collision refusal, uninstall, preference preservation,
+  explicit preference removal, and recovery from optional Gemini setup failure.
+- A separate isolated end-to-end check installed the app, validated the generated
+  desktop entry, launched `videotool --health`, updated the managed copy, and
+  uninstalled it. The SVG icon parsed successfully. Nothing was installed under
+  the user's actual home directories.
+- The About/readiness checks cover the installed/app version, Python, Tkinter,
+  FFmpeg, ffprobe, and optional Gemini client/key state without revealing a key.
+- No user media, saved credentials, conversion output, history, receipt, cache,
+  or running process was accessed or changed.
+
 ## Starting folder and preview size estimates — 2026-09-11
 
 - The full 93-test regression suite completed successfully. Five optional

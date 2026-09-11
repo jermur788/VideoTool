@@ -1,0 +1,8 @@
+#!/bin/sh
+APP_DIR=@APP_DIR@
+if [ -x "$APP_DIR/.venv/bin/python" ]; then
+    PYTHON="$APP_DIR/.venv/bin/python"
+else
+    PYTHON=python3
+fi
+exec "$PYTHON" "$APP_DIR/videotool_gui.py" "$@"

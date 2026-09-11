@@ -11,6 +11,11 @@ later stages, and online failures do not change a successful local conversion.
 The same interface can upload one supported original video directly, without
 running a conversion, and saves its response beside the original.
 
+Desktop packaging is also implemented at version 0.7.0: a user-level installer
+adds an application-menu launcher and scalable icon, the About panel reports the
+version and local readiness, updates replace only a recognized managed install,
+and uninstall preserves preferences unless their removal is explicitly requested.
+
 Google Drive OAuth, native Google Doc creation, Drive-only retry, online metadata
 in receipts/history, and live-account testing remain for the next stage.
 

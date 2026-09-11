@@ -14,12 +14,14 @@ import sqlite3
 from urllib.parse import unquote, urlparse
 import conversion_history
 import gemini_analysis
+import health_checks
 import processing_receipts
 from tooltips import Tooltip
 
 import videotool
 import upload_presets
 import user_settings
+from videotool_version import __version__
 
 
 def use_project_environment():
@@ -145,6 +147,12 @@ def review_output_size(item):
         except OSError:
             return '—'
     return f'~{videotool.readable_size(item.estimated_bytes)}' if item.estimated_bytes else '—'
+
+
+def about_text(checks=None):
+    return (f'VideoTool\nInstalled/app version: {__version__}\n\nReadiness\n'
+            f'{health_checks.report(checks)}\n\n'
+            'Gemini is optional. Readiness checks never display your API key.')
 
 
 def estimate(processed, duration, elapsed, complete=False):
@@ -643,7 +651,7 @@ def main():
     except tk.TclError as exc:
         print(f'Could not open a desktop window: {exc}')
         return 1
-    root.title('VideoTool — Prepare videos')
+    root.title(f'VideoTool {__version__} — Prepare videos')
     root.geometry('1080x960')
     root.minsize(860, 720)
     root.configure(background='#f3f5f7')
@@ -666,6 +674,16 @@ def main():
     style.configure('Accent.TButton', background='#16665b', foreground='white')
     style.map('Accent.TButton', background=[('active', '#0f574e'), ('disabled', '#9aafab')])
     style.configure('Danger.TButton', foreground='#9c2f2f')
+
+    def show_about():
+        messagebox.showinfo(
+            'About VideoTool', about_text(), parent=root)
+
+    menu_bar = tk.Menu(root)
+    help_menu = tk.Menu(menu_bar, tearoff=False)
+    help_menu.add_command(label='About VideoTool', command=show_about)
+    menu_bar.add_cascade(label='Help', menu=help_menu)
+    root.configure(menu=menu_bar)
     body = ttk.Frame(root, padding=(22, 18))
     body.pack(fill='both', expand=True)
     body.columnconfigure(0, weight=1)
@@ -1649,4 +1667,8 @@ def main():
 
 if __name__ == '__main__':
     use_project_environment()
+    if '--health' in sys.argv[1:]:
+        print(f'VideoTool {__version__}')
+        print(health_checks.report())
+        raise SystemExit(0)
     raise SystemExit(main())

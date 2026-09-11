@@ -1,5 +1,19 @@
 # Next version: Gemini analysis and Google Drive delivery
 
+## Current progress — 2026-09-08
+
+The first online stage is implemented. VideoTool can optionally upload one newly
+prepared AI Studio MP4 to Gemini, wait for file processing, send an editable or
+restored default prompt, and save the full response locally as Markdown. API-key
+and SDK readiness are shown, and one-time setup stores the key in the operating
+system password store. Cancellation prevents
+later stages, and online failures do not change a successful local conversion.
+The same interface can upload one supported original video directly, without
+running a conversion, and saves its response beside the original.
+
+Google Drive OAuth, native Google Doc creation, Drive-only retry, online metadata
+in receipts/history, and live-account testing remain for the next stage.
+
 ## Goal
 
 After VideoTool prepares an AI Studio/Gemini-compatible MP4, it should optionally
@@ -113,13 +127,16 @@ response safely and do not start another stage after cancellation.
   rate limiting, cancellation at every stage, Drive failure, retry, duplicate
   prevention, and safe reopening from history.
 
-## Setup decisions needed before implementation
+## Decisions made for the Gemini stage
 
-- Final default prompt text.
-- Initial Gemini model and whether it should be user-selectable in Advanced settings.
+- The default prompt asks for a chronological Markdown summary with timestamps,
+  important visual and spoken details, and uncertainties.
+- The default model is `gemini-3.8-flash`, with an environment override.
+- Gemini analysis accepts one video per run and produces one response.
+
+## Setup decisions needed for Google Drive delivery
+
 - Google Cloud project and installed-desktop OAuth client.
-- Whether one Google Doc should be created per video or one combined document per
-  batch. One document per video is the recommended first version.
 
 Official implementation references:
 

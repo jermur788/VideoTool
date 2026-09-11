@@ -4,7 +4,8 @@ A small local Python command-line tool for inspecting videos and creating
 DaVinci editing intermediates with FFmpeg, with an optional desktop window.
 Source files are retained.
 
-The proposed Gemini analysis and Google Drive delivery workflow is documented in
+The desktop window can optionally upload prepared MP4 files to Gemini with an
+editable prompt. Google Drive delivery is the next planned stage in
 [NEXT_VERSION.md](NEXT_VERSION.md).
 
 ## Desktop window
@@ -21,10 +22,16 @@ sudo apt install python3-tk
 Open the interface from the VideoTool folder:
 
 ```bash
-python3 videotool_gui.py
+./run-videotool.sh
 ```
 
+Running `python3 videotool_gui.py` from this folder also switches automatically
+to the isolated VideoTool environment when it is available.
+
 1. Choose a preparation preset, then use **Choose source** to select one video or a folder.
+   To make the picker open on a particular drive or folder in future sessions, open
+   **Starting folder…** and choose **Choose starting folder**. Use **Use normal system
+   folder** there to return control to the operating system.
    For upload presets, choose finished DaVinci exports. DaVinci copies automatically preserve
    source bit depth. Open **Advanced settings** only when you want to use a DNxHR MOV that you
    have already confirmed works in Resolve as a format reference.
@@ -32,13 +39,17 @@ python3 videotool_gui.py
    folder inside a selected parent; otherwise copies go beside the originals.
 3. Optionally enter a location under **Name files by location**, such as `Dublin`, for names like
    `Dublin_001.mov`, `Dublin_002.mov`. Leave it blank to keep the default names.
-4. Click **Preview**. The list shows source size, duration, detected bit depth, output name,
-   and color-coded status. Select a row to reveal its full paths, format, or error.
+4. Click **Preview**. The list shows source size, duration, detected bit depth, approximate
+   output size, output name, and color-coded status. Select a row to reveal its full paths,
+   format, estimate explanation, or error.
 5. Review the ready files and click **Convert ready files** to confirm and start. Progress,
    retry, receipt, and output-folder controls appear when they are useful.
 
 When the desktop Tcl/Tk installation provides TkDND, a video or folder can also be dropped
 onto the window. **Choose source** remains available on systems without that optional support.
+The optional starting folder is stored in the normal per-user configuration location and
+does not select, scan, or alter any footage by itself. If that folder is later unavailable,
+the picker safely returns to its normal system location.
 
 Location numbering continues after the highest existing number in the output
 folder: if `Dublin_007.mov` exists, new files start at `Dublin_008.mov`. Gaps are
@@ -107,10 +118,11 @@ output folder** opens that folder in the desktop file manager (or the selected
 row's output folder if there is more than one). Progress percentages during a
 retry describe only the remaining ready files.
 
-For DaVinci folder previews, a storage banner identifies the number of ready files,
-their combined estimated output with headroom, destination free space, and the
-estimated remaining space or shortfall after the complete batch. The selected-row
-details label their smaller estimate as applying to that file only.
+For folder previews, a storage banner identifies the number of ready files, their combined
+estimated output, destination free space, and the estimated remaining space or shortfall
+after the complete batch. DaVinci estimates include 10% planning headroom. Upload estimates
+are explicitly approximate because encoded sizes vary. The selected-row details label the
+estimate as applying to that file only.
 
 Only files captured in the preview are converted. Changing the selection requires
 a new preview, and sources changed since inspection are refused. Existing outputs
@@ -126,7 +138,7 @@ Single-file names use `clip_davinci.mov`; folder mode uses `clip.mp4_davinci.mov
 Python 3.10+, FFmpeg/ffprobe, Tkinter, and a graphical desktop are required.
 The command-line tool still works without Tkinter.
 
-## Prepare finished exports for manual upload
+## Prepare finished exports for upload
 
 Use the **Prepare for** selector in the desktop window:
 
@@ -138,10 +150,57 @@ Use the **Prepare for** selector in the desktop window:
 
 Choose the finished export, select the preset, and click **Preview** to see the
 output name, dimensions, audio handling, and tradeoffs. Then convert the ready
-files. The original exports are retained. Open the output folder and upload
-completed files yourself; VideoTool does not connect to accounts or upload files.
+files. The original exports are retained. YouTube files are uploaded manually.
 The upload presets are desktop features; the existing command-line commands
 continue to prepare editing copies.
+
+### Analyze with Gemini
+
+Gemini analysis is optional and applies only to the **AI Studio upload** preset.
+Install its supported Google client once in an isolated VideoTool environment:
+
+```bash
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements-gemini.txt
+```
+
+Create a Gemini API key in Google AI Studio. In VideoTool, choose **AI Studio
+upload**, open **Gemini key…**, and select **Save or replace key**. Paste the key
+once; VideoTool saves it in the operating system's password store. The same menu
+can replace or remove it later.
+
+As an optional temporary alternative, set the key in a terminal before opening
+VideoTool:
+
+```bash
+export GEMINI_API_KEY="your-key"
+./run-videotool.sh
+```
+
+VideoTool only shows whether a key was found; it never displays the key or writes
+it into the project, receipts, or logs.
+Select **Analyze converted video with Gemini** to send the prepared MP4 after
+conversion and reveal the multiline prompt.
+Paste or edit any text there, or use **Restore default prompt**. Preview shows the
+model and exact prompt before any network request. Gemini analysis accepts one
+ready video at a time; choose a single video rather than a multi-video folder.
+
+To analyze a video that does not need preparation, enable **Upload original
+directly to Gemini (skip conversion)**. This choice enables Gemini by itself;
+you do not also select the converted-video option. Select one video file and preview it as usual. The
+main action changes to **Upload original to Gemini**; FFmpeg does not run, the
+original remains unchanged, and the Markdown response is saved beside it. Direct
+upload accepts the video formats currently listed by Gemini, including MP4, MOV,
+MPEG, AVI, FLV, WebM, WMV, and 3GPP.
+
+The current default model is `gemini-3.8-flash`. Set `VIDEOTOOL_GEMINI_MODEL`
+before starting the app to use another model. Every non-empty response is saved
+beside the MP4 as `VideoTool-Gemini-...md`, and **View Gemini response** opens the
+latest file. Upload, processing, or model errors leave the converted MP4 marked
+successful. Select the video and use **Copy error/details** to copy the complete
+failure message for troubleshooting. The existing cancel button prevents later Gemini stages from starting.
+Gemini use is subject to the quota, billing, and data handling of the Google API
+project associated with the key.
 
 ### AI Studio size target
 
@@ -154,7 +213,9 @@ Encoding uses two passes with a bitrate budget leaving 5% for overhead and
 variation. The longest edge is limited to 1920 pixels, or 1280 if the available
 bitrate is too low; videos are never upscaled. Frame rate is retained as the
 source average at constant frame rate. The preview shows the chosen dimensions
-and bitrate. Video bitrate is capped at 8 Mb/s for this analysis-oriented copy.
+and bitrate. It estimates output from that bitrate, duration, and planned audio,
+while the entered size remains a hard maximum. Video bitrate is capped at 8 Mb/s
+for this analysis-oriented copy.
 
 A preset guard refuses targets below the greater of 500 kb/s or 0.05 bits per
 pixel per frame at the smallest chosen dimensions. This is a practical quality
@@ -175,6 +236,9 @@ frames, closed GOPs, and AAC-LC audio at 48 kHz. It uses quality-based variable
 bitrate (CRF 18, slow preset), retaining resolution except even-pixel rounding and
 the source average frame rate. CRF 18 is VideoTool's quality choice, not a YouTube
 requirement. Stereo audio uses 384 kb/s; mono uses 128 kb/s. There is no size cap.
+The preview gives a rough storage-planning estimate based on output resolution,
+frame rate, duration, and audio. Motion and picture detail can make the actual file
+much smaller or larger, so the estimate is never presented as a limit or guarantee.
 
 ### Supported finished exports and existing workflows
 
@@ -221,8 +285,9 @@ python3 videotool.py --help
 python3 videotool.py inspect --help
 ```
 
-Requirements: Python 3.10+ and FFmpeg with `ffprobe` on PATH. No Python packages,
-virtual environment, or installation step is needed. Python 3.12.3 and FFmpeg
+Requirements: Python 3.10+ and FFmpeg with `ffprobe` on PATH. Local-only use needs
+no Python package installation; Gemini analysis uses the optional requirements file.
+Python 3.12.3 and FFmpeg
 6.1.1 were available on this machine when this was created.
 
 ## Scope and safety

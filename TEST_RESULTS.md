@@ -1,5 +1,61 @@
 Test results — VideoTool
 
+## Starting folder and preview size estimates — 2026-09-11
+
+- The full 93-test regression suite completed successfully. Five optional
+  display-dependent checks were skipped because this run did not open the desktop
+  interface; the three temporary-media integration checks passed.
+- The source picker can now start in a user-selected folder or mounted drive on
+  future launches. Settings tests cover the normal per-user location, save/load,
+  reset, malformed data, unavailable folders, and preservation of future settings.
+- Preview now has an **Approx. output** column for DaVinci, AI Studio, and YouTube
+  preparation. AI Studio uses the planned bitrate, duration, and audio while
+  respecting the chosen maximum. YouTube uses a storage-planning heuristic based
+  on output resolution, frame rate, duration, and audio, and warns that CRF output
+  can be much smaller or larger.
+- Upload-preset folder previews now include their approximate batch total and
+  destination free space. Direct Gemini uploads say **No copy** because no local
+  output is created.
+- No user footage, existing output, or running process was accessed or changed.
+
+## Gemini upload, prompt, and secure key setup — 2026-09-09
+
+- All 88 automated tests passed with the five real desktop-display checks enabled.
+  The window checks cover the secure-key menu, revealing the prompt, replacing its
+  text, and restoring the default.
+- Mocked API tests cover upload, processing-state polling, prompt submission,
+  response persistence, empty responses, processing failure, cancellation,
+  credential redaction, and preserving a successful local conversion when the
+  online stage fails.
+- The UI now saves, replaces, or removes the API key through the operating system
+  password store. Tests verify round-trip storage, deletion, and that a securely
+  saved key takes precedence over a temporary terminal key.
+- The installed keyring client selected Cinnamon's Secret Service backend during
+  a read-only host check. No credential was read or written during that check.
+- Gemini analysis is restricted to one ready video per run. Multi-video folder
+  conversion remains available with online analysis turned off.
+- Direct Gemini upload previews and uploads one supported original video without
+  running FFmpeg. Tests verify unchanged source selection, unsupported-format and
+  folder refusal, MOV upload, and the desktop toggle hiding conversion-only options.
+- The selected row's complete error and technical context can be copied with
+  **Copy error/details**. The desktop failure workflow verifies the clipboard text.
+- An invalid Google API key now produces a short replacement instruction instead
+  of the raw Google error payload. Key entry also rejects quotation marks,
+  whitespace, and backslashes that may be copied accidentally from a shell example.
+- A restricted-project 401 now directs the user to resolve the project access or
+  billing notice in Google AI Studio, or use a key from an active project.
+- A failed direct upload now says that the original video was kept unchanged and
+  no longer claims that a conversion succeeded. Repeated error text was removed
+  from the copyable details.
+- Google's `google-genai` client 2.22.0 was installed successfully in the ignored
+  `.venv` environment and its `Client` entry point was verified. No Gemini API key
+  was present, so no live upload or billable model request was made.
+- Directly launching `python3 videotool_gui.py` now restarts with the isolated
+  VideoTool environment automatically, preventing a false “support is not
+  installed” message when the package exists there.
+- Only temporary dummy or generated media was used. User footage and the user's
+  running application were not accessed or interrupted.
+
 ## Folder storage total and destination creation — 2026-09-08
 
 - All 67 automated tests passed with the real desktop-display checks enabled.

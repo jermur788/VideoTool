@@ -39,6 +39,9 @@ class UploadTests(unittest.TestCase):
         self.assertFalse(result.output.exists())
         self.assertNotIn('-t', result.command)
         self.assertNotIn('-fs', result.command)
+        self.assertGreater(result.estimated_bytes, 0)
+        self.assertLessEqual(result.estimated_bytes, result.max_bytes)
+        self.assertIn('Approximate output:', result.detail)
 
     def test_too_small_target_is_blocked_before_encoding(self):
         with self.assertRaisesRegex(videotool.VideoToolError, 'too small'):
@@ -71,6 +74,8 @@ class UploadTests(unittest.TestCase):
         self.assertEqual((result.width, result.height), (1920, 1080))
         self.assertIn('-n', command)
         self.assertNotIn('-y', command)
+        self.assertGreater(result.estimated_bytes, 0)
+        self.assertIn('may be much smaller or larger', result.detail)
 
     def test_hdr_interlace_rotation_and_ambiguous_audio_are_explicit(self):
         changes = [('color_transfer', 'smpte2084'), ('color_transfer', 'arib-std-b67'),

@@ -13,15 +13,26 @@ import os
 import sqlite3
 from urllib.parse import unquote, urlparse
 import conversion_history
+import gemini_analysis
 import processing_receipts
 from tooltips import Tooltip
 
 import videotool
 import upload_presets
+import user_settings
+
+
+def use_project_environment():
+    """Restart a directly launched GUI with the project's optional packages."""
+    environment = Path(__file__).resolve().parent / '.venv'
+    python = environment / 'bin' / 'python'
+    if python.is_file() and Path(sys.prefix) != environment:
+        os.execv(str(python), [str(python), str(Path(__file__).resolve()), *sys.argv[1:]])
 
 
 BUTTON_HINTS = {
     'Choose source': 'Choose one video file or a folder of videos. Folder subdirectories are not included.',
+    'Starting folder…': 'Choose which folder or drive the source picker opens in each time.',
     'Choose reference': 'Choose a DNxHR MOV that you have already confirmed works in DaVinci.',
     'Use automatic': 'Choose DNxHR SQ for 8-bit footage and DNxHR HQX for 10-bit footage.',
     'Output folder': 'Choose an existing output folder or create a new one.',
@@ -34,6 +45,11 @@ BUTTON_HINTS = {
     'Open output folder': 'Open the output folder in your file manager. If a row is selected, open that video’s output folder.',
     'View processing receipt': 'Open the Markdown record for the latest completed conversion run.',
     'Copy summary': 'Copy the latest run counts, elapsed time, and receipt location.',
+    'Restore default prompt': 'Replace the prompt with VideoTool’s default video-summary prompt.',
+    'View Gemini response': 'Open the latest Gemini response saved as Markdown beside the prepared video.',
+    'Gemini key…': 'Save, replace, or remove the Gemini API key in your system password store.',
+    'Upload original to Gemini': 'Upload the selected video to Gemini without converting or changing it.',
+    'Copy error/details': 'Copy the selected video’s full status and error details to the clipboard.',
 }
 
 
@@ -65,6 +81,14 @@ class Conversion:
     receipt_path: object = None
     attempted_this_run: bool = False
     completed_this_run: bool = False
+    gemini_requested: bool = False
+    gemini_prompt: str = ''
+    gemini_model: str = ''
+    gemini_status: str = ''
+    gemini_error: str = ''
+    gemini_response_path: object = None
+    gemini_remote_name: str = ''
+    direct_upload: bool = False
 
     def __post_init__(self):
         if self.executed_commands is None:
@@ -110,6 +134,17 @@ def review_bit_depth(item):
     if item.davinci_settings and item.davinci_settings.get('bit_depth'):
         return f"{item.davinci_settings['bit_depth']}-bit"
     return '—'
+
+
+def review_output_size(item):
+    if item.direct_upload:
+        return 'No copy'
+    if item.completed:
+        try:
+            return videotool.readable_size(item.output.stat().st_size)
+        except OSError:
+            return '—'
+    return f'~{videotool.readable_size(item.estimated_bytes)}' if item.estimated_bytes else '—'
 
 
 def estimate(processed, duration, elapsed, complete=False):
@@ -233,6 +268,8 @@ def plan_item(source, output, location='', preset='davinci', target_mb=380, davi
         else:
             item.upload_plan = upload_presets.plan(source, output, metadata, preset, target_mb)
             command = item.upload_plan.command
+            item.estimated_bytes = item.upload_plan.estimated_bytes
+            item.available_bytes = videotool.available_space(output)
         if before != fingerprint(source):
             raise videotool.VideoToolError('Source changed during inspection. Preview again.')
         video = videotool.select_video(metadata)
@@ -260,6 +297,40 @@ def plan_item(source, output, location='', preset='davinci', target_mb=380, davi
     except (videotool.VideoToolError, OSError) as exc:
         item.error = str(exc)
     return item
+
+
+def preview_direct_gemini(source, folder=False):
+    """Review one original video for Gemini without planning a conversion."""
+    if folder:
+        raise gemini_analysis.GeminiError(
+            'Direct Gemini upload accepts one video file. Choose a video instead of a folder.')
+    candidate = Path(source).expanduser()
+    if candidate.is_symlink():
+        raise gemini_analysis.GeminiError('Choose a regular video file, not a symbolic link.')
+    try:
+        source = candidate.resolve(strict=True)
+    except OSError as exc:
+        raise gemini_analysis.GeminiError(f'Cannot open the selected video: {exc}') from exc
+    if not source.is_file():
+        raise gemini_analysis.GeminiError('Choose one available video file.')
+    if source.suffix.lower() not in gemini_analysis.SUPPORTED_VIDEO_SUFFIXES:
+        raise gemini_analysis.GeminiError('Gemini does not support this video file format.')
+    try:
+        before = fingerprint(source)
+        metadata = videotool.inspect_video(source)
+        video = videotool.select_video(metadata)
+        if before != fingerprint(source):
+            raise gemini_analysis.GeminiError('Source changed during inspection. Preview again.')
+    except (videotool.VideoToolError, OSError) as exc:
+        raise gemini_analysis.GeminiError(f'Cannot inspect the selected video: {exc}') from exc
+    size = videotool.readable_size(source.stat().st_size)
+    detail = (f'{video["width"]} × {video["height"]} · '
+              f'{videotool.frame_rate(video.get("avg_frame_rate"))} fps average\n'
+              f'Original file: {size} · No conversion will run.\n'
+              'This exact file will be uploaded to Gemini and will remain unchanged.')
+    return Conversion(source, source, [], fingerprint=before, detail=detail,
+                      duration=duration_seconds(metadata), preset='aistudio',
+                      source_metadata=metadata, direct_upload=True)
 
 
 def retry_preview(items):
@@ -294,27 +365,49 @@ def retry_preview(items):
 
 
 def completion_summary(items):
+    if items and all(item.direct_upload for item in items):
+        analyzed = sum(bool(item.gemini_response_path) for item in items)
+        online_failed = sum(item.gemini_status == 'Failed' for item in items)
+        online_cancelled = sum(item.gemini_status == 'Cancelled' for item in items)
+        title = ('Gemini analysis complete' if analyzed and not online_failed and not online_cancelled
+                 else 'Gemini analysis needs attention')
+        text = (f'{title}: original video kept unchanged.\nFile: {items[0].source}\n'
+                f'Gemini: {analyzed} response(s) saved locally · {online_failed} failed · '
+                f'{online_cancelled} cancelled.')
+        if online_failed or online_cancelled:
+            text += '\nSelect the video and use Copy error/details for the full error.'
+        return text
     completed = sum(item.completed for item in items)
     failed = sum(not item.completed and (bool(item.error) or item.outcome == 'Failed') for item in items)
     remaining = len(items) - completed - failed
     title = 'Conversion complete' if not failed and not remaining else 'Conversion needs attention'
     folders = sorted({str(item.output.parent) for item in items})
     summary = f'{title}: {completed} completed · {failed} failed/blocked · {remaining} unfinished.\nOutput: ' + ', '.join(folders)
-    if any(item.preset != 'davinci' for item in items):
+    analyzed = sum(bool(item.gemini_response_path) for item in items)
+    online_failed = sum(item.gemini_status == 'Failed' for item in items)
+    online_cancelled = sum(item.gemini_status == 'Cancelled' for item in items)
+    if analyzed or online_failed or online_cancelled:
+        summary += (f'\nGemini: {analyzed} response(s) saved locally · {online_failed} failed · '
+                    f'{online_cancelled} cancelled.')
+        if online_failed or online_cancelled:
+            summary += '\nSelect the video and use Copy error/details for the full error.'
+    elif any(item.preset != 'davinci' for item in items):
         summary += '\nCompleted files are for manual upload. Nothing has been uploaded.'
     return summary
 
 
 def storage_summary(items):
-    ready = [item for item in items if not item.error and not item.completed and item.preset == 'davinci']
+    ready = [item for item in items if not item.error and not item.completed and not item.direct_upload]
     if not ready:
         return ''
     estimates = [item.estimated_bytes for item in ready]
     estimated = sum(estimates) if all(value is not None for value in estimates) else None
     free = min((item.available_bytes for item in ready if item.available_bytes is not None), default=None)
     noun = 'file' if len(ready) == 1 else 'files'
-    text = (f'Estimated batch output for all {len(ready)} ready {noun}: {videotool.readable_size(estimated)} '
-            f'(includes 10% headroom per file) · Destination free space: {videotool.readable_size(free)}')
+    davinci_only = all(item.preset == 'davinci' for item in ready)
+    qualifier = ' (includes 10% headroom per file)' if davinci_only else ''
+    text = (f'Estimated batch output for all {len(ready)} ready {noun}: {videotool.readable_size(estimated)}'
+            f'{qualifier} · Destination free space: {videotool.readable_size(free)}')
     if estimated is not None and free is not None and estimated > free:
         text += (f' · Short by: {videotool.readable_size(estimated - free)}. '
                  'The complete batch does not fit in the currently available space.')
@@ -322,6 +415,8 @@ def storage_summary(items):
         text += f' · Estimated space remaining after batch: {videotool.readable_size(free - estimated)}.'
     else:
         text += '.'
+    if not davinci_only:
+        text += ' Approximate only; encoded sizes can vary.'
     return text
 
 
@@ -482,6 +577,58 @@ def convert(items, stop, report, report_progress=None, cancel=None, receipt_repo
     return succeeded, failed, len(ready) - attempted + interrupted
 
 
+def analyze_completed(items, prompt, model, cancel, report, receipt_path=None, analyzer=None,
+                      response_writer=None):
+    """Analyze newly prepared AI Studio files without changing conversion outcomes."""
+    analyzer = analyzer or gemini_analysis.analyze
+    response_writer = response_writer or gemini_analysis.write_response
+    candidates = [(index, item) for index, item in enumerate(items)
+                  if item.preset == 'aistudio' and item.completed_this_run]
+    if len(candidates) > 1:
+        raise gemini_analysis.GeminiError(
+            'Gemini analysis accepts one video at a time. Choose one video and preview again.')
+    saved = []
+    failed = 0
+    for position, (index, item) in enumerate(candidates, 1):
+        if cancel.is_set():
+            item.gemini_status = 'Cancelled'
+            item.gemini_error = 'Gemini analysis cancelled. The converted video was kept.'
+            report(index, 'Done', item.gemini_error)
+            failed += 1
+            break
+        item.gemini_requested = True
+        item.gemini_prompt = prompt
+        item.gemini_model = model
+
+        def stage(label, message):
+            item.gemini_status = label
+            report(index, label, f'{message} ({position} of {len(candidates)})')
+
+        try:
+            result = analyzer(item.output, prompt, model=model, cancel=cancel, report=stage)
+            path = response_writer(item.source, item.output, prompt, result, receipt_path)
+            item.gemini_status = 'Saved'
+            item.gemini_remote_name = result.remote_name
+            item.gemini_response_path = path
+            saved.append(path)
+            report(index, 'Done', f'Converted video: {item.output}\nGemini response: {path}')
+        except gemini_analysis.GeminiCancelled as exc:
+            item.gemini_status = 'Cancelled'
+            item.gemini_error = str(exc)
+            failed += 1
+            report(index, 'Done', str(exc))
+            break
+        except (gemini_analysis.GeminiError, OSError) as exc:
+            item.gemini_status = 'Failed'
+            item.gemini_error = str(exc)
+            failed += 1
+            if item.direct_upload:
+                report(index, 'Done', f'Original video kept unchanged. Gemini failed: {exc}')
+            else:
+                report(index, 'Done', f'Video conversion succeeded. Gemini failed: {exc}')
+    return saved, failed
+
+
 def main():
     try:
         import tkinter as tk
@@ -524,8 +671,9 @@ def main():
     body.columnconfigure(0, weight=1)
     body.rowconfigure(3, weight=1)
     ttk.Label(body, text='Prepare your videos', style='Title.TLabel').grid(sticky='w')
-    ttk.Label(body, text='Choose a format and footage, review the files, then convert.',
-              style='Subtitle.TLabel').grid(row=1, sticky='w', pady=(3, 14))
+    subtitle = tk.StringVar(value='Choose a format and footage, review the files, then convert.')
+    ttk.Label(body, textvariable=subtitle, style='Subtitle.TLabel').grid(
+        row=1, sticky='w', pady=(3, 14))
     source = tk.StringVar(value='Choose a video or a folder to begin')
     destination = tk.StringVar(value='Save beside the original files')
     reference_text = tk.StringVar(value='Automatic: preserve 8-bit or 10-bit')
@@ -533,14 +681,24 @@ def main():
     preset_name = tk.StringVar(value=upload_presets.PRESETS['davinci'])
     target_size = tk.StringVar(value='380')
     advanced_reference = tk.BooleanVar(value=False)
+    analyze_with_gemini = tk.BooleanVar(value=False)
+    direct_gemini_upload = tk.BooleanVar(value=False)
+    gemini_readiness = tk.StringVar()
     preset_note = tk.StringVar()
     naming_note = tk.StringVar()
-    source_note = tk.StringVar(value='Folder mode scans one folder. Existing outputs are preserved.')
+    configured_source_folder = user_settings.default_source_folder()
+    def regular_source_note():
+        note = 'Folder mode scans one folder. Existing outputs are preserved.'
+        if configured_source_folder:
+            note += f' File picker starts in: {configured_source_folder}'
+        return note
+    normal_source_note = regular_source_note()
+    source_note = tk.StringVar(value=normal_source_note)
     storage_text = tk.StringVar()
     status = tk.StringVar(value='Ready to choose footage.')
     state = {'source': None, 'folder': False, 'destination': None, 'items': [], 'busy': False,
              'messages': {}, 'reference': None, 'receipt': None, 'run_summary': '',
-             'receipt_error': ''}
+             'receipt_error': '', 'gemini_response': None}
     events = queue.Queue()
     stop = threading.Event()
     cancel = threading.Event()
@@ -552,6 +710,7 @@ def main():
         state['receipt'] = None
         state['run_summary'] = ''
         state['receipt_error'] = ''
+        state['gemini_response'] = None
         tree.delete(*tree.get_children())
         show_details()
         file_progress_text.set('Current file: waiting')
@@ -562,16 +721,29 @@ def main():
         storage_banner.grid_remove()
         progress_frame.grid_remove()
         start_button.configure(state='disabled')
+        direct_button.configure(state='disabled')
+        if selected_preset() == 'aistudio' and direct_gemini_upload.get():
+            start_button.grid_remove()
+            direct_button.grid()
+        else:
+            direct_button.grid_remove()
+            start_button.grid()
         retry_button.configure(state='disabled')
         retry_button.pack_forget()
         open_button.configure(state='disabled')
         result_actions.grid_remove()
         view_receipt_button.grid_remove()
         copy_summary_button.grid_remove()
+        copy_details_button.grid_remove()
         open_button.grid_remove()
+        view_gemini_button.grid_remove()
         view_receipt_button.configure(state='disabled')
         copy_summary_button.configure(state='disabled')
-        status.set('Preview your selection before converting.')
+        copy_details_button.configure(state='disabled')
+        view_gemini_button.configure(state='disabled')
+        status.set('Preview this video before uploading it to Gemini.'
+                   if selected_preset() == 'aistudio' and direct_gemini_upload.get()
+                   else 'Preview your selection before converting.')
 
     def set_source(selected, folder):
         selected = str(selected)
@@ -580,9 +752,43 @@ def main():
         invalidate()
 
     def choose_source(folder):
-        selected = filedialog.askdirectory(parent=root, title='Choose footage folder') if folder else filedialog.askopenfilename(parent=root, title='Choose video')
+        options = {'parent': root, 'title': 'Choose footage folder' if folder else 'Choose video'}
+        if configured_source_folder and configured_source_folder.is_dir():
+            options['initialdir'] = str(configured_source_folder)
+        selected = filedialog.askdirectory(**options) if folder else filedialog.askopenfilename(**options)
         if selected:
             set_source(selected, folder)
+
+    def choose_starting_folder():
+        nonlocal configured_source_folder, normal_source_note
+        options = {'parent': root, 'title': 'Choose the folder source selection should open in'}
+        if configured_source_folder and configured_source_folder.is_dir():
+            options['initialdir'] = str(configured_source_folder)
+        selected = filedialog.askdirectory(**options)
+        if not selected:
+            return
+        try:
+            configured_source_folder = user_settings.save_default_source_folder(selected)
+        except ValueError as exc:
+            messagebox.showerror('Could not save starting folder', str(exc), parent=root)
+            return
+        normal_source_note = regular_source_note()
+        if not (selected_preset() == 'aistudio' and direct_gemini_upload.get()):
+            source_note.set(normal_source_note)
+        status.set(f'Source picker will start in: {configured_source_folder}')
+
+    def reset_starting_folder():
+        nonlocal configured_source_folder, normal_source_note
+        try:
+            user_settings.clear_default_source_folder()
+        except ValueError as exc:
+            messagebox.showerror('Could not reset starting folder', str(exc), parent=root)
+            return
+        configured_source_folder = None
+        normal_source_note = regular_source_note()
+        if not (selected_preset() == 'aistudio' and direct_gemini_upload.get()):
+            source_note.set(normal_source_note)
+        status.set('Source picker will use the normal system starting folder.')
 
     def choose_destination():
         selected = filedialog.askdirectory(parent=root, title='Choose output folder')
@@ -699,10 +905,17 @@ def main():
     source_menu.add_command(label='Folder', command=lambda: choose_source(True))
     source_button.configure(menu=source_menu)
     controls.append(source_button)
-    ttk.Label(selection, text='Destination', style='Field.TLabel').grid(row=2, column=0, sticky='w',
-                                                                        padx=(0, 12), pady=(8, 0))
-    ttk.Entry(selection, textvariable=destination, state='readonly').grid(row=2, column=1, columnspan=2,
-                                                                          sticky='ew', pady=(8, 0))
+    starting_folder_button = ttk.Menubutton(selection, text='Starting folder…')
+    starting_folder_button.grid(row=1, column=2, sticky='w', padx=(6, 0), pady=(6, 0))
+    starting_folder_menu = tk.Menu(starting_folder_button, tearoff=False)
+    starting_folder_menu.add_command(label='Choose starting folder', command=choose_starting_folder)
+    starting_folder_menu.add_command(label='Use normal system folder', command=reset_starting_folder)
+    starting_folder_button.configure(menu=starting_folder_menu)
+    controls.append(starting_folder_button)
+    destination_label = ttk.Label(selection, text='Destination', style='Field.TLabel')
+    destination_label.grid(row=2, column=0, sticky='w', padx=(0, 12), pady=(8, 0))
+    destination_entry = ttk.Entry(selection, textvariable=destination, state='readonly')
+    destination_entry.grid(row=2, column=1, columnspan=2, sticky='ew', pady=(8, 0))
     output_button = ttk.Menubutton(selection, text='Output folder')
     output_button.grid(row=3, column=1, sticky='w', pady=(6, 0))
     output_menu = tk.Menu(output_button, tearoff=False)
@@ -721,10 +934,137 @@ def main():
     location_entry = ttk.Entry(naming, textvariable=location, width=25)
     location_entry.grid(row=0, column=1, sticky='ew')
     controls.append(location_entry)
+    destination_controls = [output_button, originals_button, location_entry]
     ttk.Label(naming, textvariable=naming_note, style='Muted.TLabel').grid(row=1, column=1,
                                                                           sticky='w', pady=(3, 0))
     ttk.Label(selection, textvariable=source_note, style='Muted.TLabel', wraplength=450).grid(
         row=5, column=0, columnspan=3, sticky='w', pady=(7, 0))
+
+    gemini_options = ttk.LabelFrame(setup, text='Gemini analysis', style='Section.TLabelframe',
+                                    padding=(14, 10))
+    gemini_options.grid(row=1, column=0, columnspan=2, sticky='ew', pady=(10, 0))
+    gemini_options.columnconfigure(0, weight=1)
+    gemini_toggle = ttk.Checkbutton(gemini_options, text='Analyze converted video with Gemini',
+                                    variable=analyze_with_gemini)
+    gemini_toggle.grid(row=0, column=0, sticky='w')
+    controls.append(gemini_toggle)
+    Tooltip(gemini_toggle, 'Upload the reviewed video to Gemini and send it with the prompt below.')
+    gemini_key_button = ttk.Menubutton(gemini_options, text='Gemini key…')
+    gemini_key_button.grid(row=0, column=1, sticky='e', padx=(12, 0))
+    controls.append(gemini_key_button)
+    gemini_key_menu = tk.Menu(gemini_key_button, tearoff=False)
+    gemini_key_button.configure(menu=gemini_key_menu)
+    ttk.Label(gemini_options, textvariable=gemini_readiness, style='Muted.TLabel').grid(
+        row=1, column=0, columnspan=2, sticky='w', pady=(5, 0))
+    direct_upload_toggle = ttk.Checkbutton(
+        gemini_options, text='Upload original directly to Gemini (skip conversion)',
+        variable=direct_gemini_upload)
+    direct_upload_toggle.grid(row=2, column=0, columnspan=2, sticky='w', pady=(7, 0))
+    controls.append(direct_upload_toggle)
+    Tooltip(direct_upload_toggle,
+            'Send the selected original video to Gemini exactly as it is, without running FFmpeg.')
+    prompt_options = ttk.Frame(gemini_options)
+    prompt_options.grid(row=3, column=0, columnspan=2, sticky='ew', pady=(8, 0))
+    prompt_options.columnconfigure(0, weight=1)
+    ttk.Label(prompt_options, text='Prompt sent with this video', style='Field.TLabel').grid(
+        row=0, column=0, sticky='w')
+    restore_prompt_button = ttk.Button(prompt_options, text='Restore default prompt')
+    restore_prompt_button.grid(row=0, column=1, sticky='e', padx=(10, 0))
+    controls.append(restore_prompt_button)
+    prompt_text = ScrolledText(prompt_options, height=6, wrap='word', font=('Sans', 10),
+                               borderwidth=1, padx=10, pady=8)
+    prompt_text.grid(row=1, column=0, columnspan=2, sticky='ew', pady=(6, 0))
+    prompt_text.insert('1.0', gemini_analysis.DEFAULT_PROMPT)
+
+    def current_prompt():
+        return prompt_text.get('1.0', 'end-1c').strip()
+
+    def restore_default_prompt():
+        prompt_text.delete('1.0', 'end')
+        prompt_text.insert('1.0', gemini_analysis.DEFAULT_PROMPT)
+        invalidate()
+
+    restore_prompt_button.configure(command=restore_default_prompt)
+    prompt_text.bind('<FocusOut>', lambda event: invalidate(), add='+')
+
+    def show_gemini_prompt(*args):
+        online = analyze_with_gemini.get() or direct_gemini_upload.get()
+        direct = selected_preset() == 'aistudio' and direct_gemini_upload.get()
+        if selected_preset() == 'aistudio' and online:
+            prompt_options.grid()
+        else:
+            prompt_options.grid_remove()
+        if direct:
+            target_options.grid_remove()
+            preset_note.set('Upload one selected original video directly to Gemini. No conversion will run.\n'
+                            'The Gemini response will be saved beside the original.')
+            selection.configure(text='2  Choose one video')
+            for widget in (destination_label, destination_entry, output_button, originals_button, naming):
+                widget.grid_remove()
+            source_menu.entryconfigure(1, state='disabled')
+            source_note.set('Choose or drop one video. The original will remain unchanged.')
+            subtitle.set('Choose one video, review the prompt, then upload it to Gemini.')
+            tree.heading('output', text='Upload file')
+        elif selected_preset() == 'aistudio':
+            target_options.grid()
+            preset_note.set('Finished SDR exports → smaller MP4 copies, up to 1920 pixels on the longest edge.\n'
+                            'Optionally upload one result to Gemini with your prompt after conversion.')
+        if not direct:
+            selection.configure(text='2  Choose source and destination')
+            destination_label.grid()
+            destination_entry.grid()
+            output_button.grid()
+            originals_button.grid()
+            naming.grid()
+            source_menu.entryconfigure(1, state='normal')
+            source_note.set(normal_source_note)
+            subtitle.set('Choose a format and footage, review the files, then convert.')
+            tree.heading('output', text='Output file')
+        _ready, readiness_text = gemini_analysis.readiness()
+        gemini_readiness.set(readiness_text)
+        if not state['busy']:
+            restore_prompt_button.configure(state='normal' if online else 'disabled')
+            direct_upload_toggle.configure(state='normal')
+            direct = selected_preset() == 'aistudio' and direct_gemini_upload.get()
+            for widget in destination_controls:
+                widget.configure(state='disabled' if direct else 'normal')
+
+    def save_gemini_key():
+        value = simpledialog.askstring(
+            'Set up Gemini', 'Paste your new Gemini API key:', parent=root, show='*')
+        if value is None:
+            return
+        try:
+            gemini_analysis.save_api_key(value)
+        except gemini_analysis.GeminiError as exc:
+            messagebox.showerror('Could not save Gemini key', str(exc), parent=root)
+            return
+        show_gemini_prompt()
+        status.set('Gemini key saved securely. You will not need to enter it each time.')
+
+    def remove_gemini_key():
+        try:
+            removed = gemini_analysis.delete_api_key()
+        except gemini_analysis.GeminiError as exc:
+            messagebox.showerror('Could not remove Gemini key', str(exc), parent=root)
+            return
+        show_gemini_prompt()
+        status.set('Saved Gemini key removed.' if removed else 'No saved Gemini key was found.')
+
+    gemini_key_menu.add_command(label='Save or replace key', command=save_gemini_key)
+    gemini_key_menu.add_command(label='Remove saved key', command=remove_gemini_key)
+
+    def gemini_option_changed(*args):
+        if analyze_with_gemini.get() and direct_gemini_upload.get():
+            direct_gemini_upload.set(False)
+        show_gemini_prompt()
+        invalidate()
+
+    def direct_upload_changed(*args):
+        if direct_gemini_upload.get() and analyze_with_gemini.get():
+            analyze_with_gemini.set(False)
+        show_gemini_prompt()
+        invalidate()
 
     def receive_drop(data):
         try:
@@ -738,6 +1078,8 @@ def main():
             candidate = Path(raw).expanduser().resolve(strict=True)
             if not candidate.is_file() and not candidate.is_dir():
                 raise OSError('Drop one video file or one folder.')
+            if direct_gemini_upload.get() and candidate.is_dir():
+                raise OSError('Direct Gemini upload accepts one video file, not a folder.')
             set_source(candidate, candidate.is_dir())
             if len(candidates) > 1:
                 status.set('Using the first dropped item. VideoTool accepts one file or one folder at a time.')
@@ -751,8 +1093,9 @@ def main():
         root.tk.call('tkdnd::drop_target', 'register', root._w, 'DND_Files')
         drop_command = root.register(receive_drop)
         root.tk.call('bind', root._w, '<<Drop:DND_Files>>', f'{drop_command} %D')
-        source_note.set('Drop a video or folder onto this window, or use Choose source. '
-                        'Folder subdirectories are not included.')
+        normal_source_note = ('Drop a video or folder onto this window, or use Choose source. '
+                              'Folder subdirectories are not included.')
+        source_note.set(normal_source_note)
     except tk.TclError:
         pass
 
@@ -772,7 +1115,7 @@ def main():
         mode = selected_preset()
         notes = {
             'davinci': 'Keeps 8-bit footage at 8-bit with DNxHR SQ and 10-bit footage at 10-bit with HQX.\nPreview shows estimated output and free space. Originals are kept.',
-            'aistudio': 'Finished SDR exports → smaller MP4 copies, up to 1920 pixels on the longest edge.\nYour size target is checked after encoding. No five-minute rule. Upload manually to AI Studio.',
+            'aistudio': 'Finished SDR exports → smaller MP4 copies, up to 1920 pixels on the longest edge.\nOptionally upload one result to Gemini with your prompt after conversion.',
             'youtube': 'Finished SDR exports → high-quality H.264/AAC MP4 copies at source resolution.\nNo size cap. Check picture and sound, then upload manually to YouTube.',
         }
         preset_note.set(notes[mode])
@@ -780,6 +1123,7 @@ def main():
         if mode == 'aistudio':
             davinci_options.grid_remove()
             target_options.grid()
+            gemini_options.grid()
         elif mode == 'davinci':
             target_options.grid_remove()
             davinci_options.grid()
@@ -787,10 +1131,13 @@ def main():
         else:
             target_options.grid_remove()
             davinci_options.grid_remove()
+        if mode != 'aistudio':
+            gemini_options.grid_remove()
         size_entry.configure(state='normal' if mode == 'aistudio' and not state['busy'] else 'disabled')
         for widget in reference_controls:
             widget.configure(state=('readonly' if widget is reference_entry else 'normal')
                              if mode == 'davinci' and not state['busy'] else 'disabled')
+        show_gemini_prompt()
         invalidate()
 
     def selected_preset():
@@ -809,17 +1156,21 @@ def main():
     table_frame.columnconfigure(0, weight=1)
     table_frame.rowconfigure(0, weight=1)
     tree = ttk.Treeview(table_frame,
-                        columns=('source', 'size', 'duration', 'depth', 'output', 'status'),
+                        columns=('source', 'size', 'duration', 'depth', 'estimate', 'output', 'status'),
                         show='headings', selectmode='browse')
     for key, title, width in [('source', 'Source video', 225), ('size', 'Size', 85),
                               ('duration', 'Duration', 80), ('depth', 'Bit depth', 75),
-                              ('output', 'Output file', 275), ('status', 'Status', 100)]:
+                              ('estimate', 'Approx. output', 105),
+                              ('output', 'Output file', 210), ('status', 'Status', 100)]:
         tree.heading(key, text=title)
         tree.column(key, width=width, minwidth=65,
                     stretch=key in ('source', 'output'))
     tree.tag_configure('Ready', foreground='#16665b')
     tree.tag_configure('Done', foreground='#25723b')
     tree.tag_configure('Converting', foreground='#1f5f99')
+    tree.tag_configure('Uploading', foreground='#1f5f99')
+    tree.tag_configure('Processing', foreground='#1f5f99')
+    tree.tag_configure('Analyzing', foreground='#1f5f99')
     tree.tag_configure('Blocked', foreground='#9c5a16')
     tree.tag_configure('Failed', foreground='#a03030')
     tree.tag_configure('Interrupted', foreground='#a03030')
@@ -833,16 +1184,23 @@ def main():
     details.grid(row=2, sticky='ew', pady=(8, 0))
     details.configure(state='disabled')
 
+    def details_text(index):
+        item = state['items'][index]
+        text = f'Source: {item.source}\nOutput/upload file: {item.output}\n' + (item.error or item.detail)
+        if item.gemini_model:
+            text += f'\nGemini model: {item.gemini_model}'
+        if index in state['messages']:
+            text += '\n' + state['messages'][index]
+        if item.gemini_error and item.gemini_error not in text:
+            text += f'\nGemini error: {item.gemini_error}'
+        return text
+
     def show_details(event=None):
         selected = tree.selection()
         text = ''
         if selected:
             details.grid()
-            index = int(selected[0])
-            item = state['items'][index]
-            text = f'Source: {item.source}\nOutput: {item.output}\n' + (item.error or item.detail)
-            if index in state['messages']:
-                text += '\n' + state['messages'][index]
+            text = details_text(int(selected[0]))
         else:
             details.grid_remove()
         details.configure(state='normal')
@@ -871,11 +1229,19 @@ def main():
         state['busy'] = value
         for button in controls:
             button.configure(state='disabled' if value else ('readonly' if isinstance(button, ttk.Combobox) else 'normal'))
-        size_entry.configure(state='normal' if not value and selected_preset() == 'aistudio' else 'disabled')
+        direct = selected_preset() == 'aistudio' and direct_gemini_upload.get()
+        size_entry.configure(state='normal' if not value and selected_preset() == 'aistudio' and not direct else 'disabled')
+        for widget in destination_controls:
+            widget.configure(state='disabled' if value or direct else 'normal')
         for widget in reference_controls:
             widget.configure(state=('readonly' if widget is reference_entry else 'normal')
                              if not value and selected_preset() == 'davinci' else 'disabled')
+        prompt_text.configure(state='disabled' if value else 'normal')
+        online = analyze_with_gemini.get() or direct_gemini_upload.get()
+        restore_prompt_button.configure(state='disabled' if value or not online else 'normal')
+        direct_upload_toggle.configure(state='disabled' if value else 'normal')
         start_button.configure(state='disabled')
+        direct_button.configure(state='disabled')
         retry_button.configure(state='disabled')
         open_button.configure(state='disabled')
         if value:
@@ -887,6 +1253,8 @@ def main():
             cancel_button.configure(state='disabled')
             view_receipt_button.configure(state='normal' if state['receipt'] else 'disabled')
             copy_summary_button.configure(state='normal' if state['run_summary'] else 'disabled')
+            copy_details_button.configure(state='normal' if state['items'] else 'disabled')
+            view_gemini_button.configure(state='normal' if state['gemini_response'] else 'disabled')
 
     def do_preview():
         if not state['source']:
@@ -902,9 +1270,25 @@ def main():
         status.set('Inspecting footage…')
         args = (state['source'], state['folder'], state['destination'], location.get(), selected_preset(),
                 target_size.get(), state['reference'])
+        online = (analyze_with_gemini.get() or direct_gemini_upload.get()) and selected_preset() == 'aistudio'
+        direct = online and direct_gemini_upload.get()
+        reviewed_prompt = current_prompt()
         def worker():
             try:
-                events.put(('preview', preview(*args)))
+                items = [preview_direct_gemini(args[0], args[1])] if direct else preview(*args)
+                if online:
+                    ready_items = [item for item in items if not item.error and not item.completed]
+                    if len(ready_items) != 1:
+                        raise gemini_analysis.GeminiError(
+                            'Gemini analysis accepts one ready video at a time. Choose one video and preview again.')
+                    for item in ready_items:
+                        item.gemini_requested = True
+                        item.gemini_prompt = reviewed_prompt
+                        item.gemini_model = gemini_analysis.DEFAULT_MODEL
+                        timing = 'without conversion' if direct else 'after conversion'
+                        item.detail += (f'\nGemini upload enabled for this video {timing} · Model: '
+                                        f'{gemini_analysis.DEFAULT_MODEL}\nPrompt:\n{reviewed_prompt}')
+                events.put(('preview', items))
             except Exception as exc:
                 events.put(('error', str(exc)))
         threading.Thread(target=worker, daemon=True).start()
@@ -934,6 +1318,12 @@ def main():
         except (OSError, TypeError) as exc:
             messagebox.showerror('Cannot open processing receipt', str(exc), parent=root)
 
+    def view_gemini_response():
+        try:
+            open_processing_receipt(state['gemini_response'])
+        except (OSError, TypeError) as exc:
+            messagebox.showerror('Cannot open Gemini response', str(exc), parent=root)
+
     def copy_summary():
         if not state['run_summary']:
             return
@@ -942,7 +1332,29 @@ def main():
         root.update_idletasks()
         status.set('Processing summary copied to the clipboard.')
 
+    def copy_details():
+        selected = tree.selection()
+        if not selected:
+            return
+        text = details_text(int(selected[0]))
+        root.clipboard_clear()
+        root.clipboard_append(text)
+        root.update_idletasks()
+        status.set('Full details copied to the clipboard.')
+
     def do_convert():
+        online = (analyze_with_gemini.get() or direct_gemini_upload.get()) and selected_preset() == 'aistudio'
+        direct = bool(state['items'] and len(state['items']) == 1 and state['items'][0].direct_upload)
+        reviewed_prompt = current_prompt()
+        if online and not reviewed_prompt:
+            messagebox.showerror('Enter a Gemini prompt',
+                                 'Paste or type the prompt to send with each video.', parent=root)
+            return
+        if online:
+            ready, readiness_text = gemini_analysis.readiness()
+            if not ready:
+                messagebox.showerror('Gemini is not ready', readiness_text, parent=root)
+                return
         busy(True)
         progress.stop()
         progress.configure(mode='determinate', value=0)
@@ -952,16 +1364,36 @@ def main():
         state['receipt'] = None
         state['run_summary'] = ''
         state['receipt_error'] = ''
+        state['gemini_response'] = None
         interrupt_actions.grid()
         stop_button.configure(state='normal')
         cancel_button.configure(state='normal')
-        status.set('Starting conversion…')
+        status.set('Starting Gemini upload…' if direct else 'Starting conversion…')
         items = tuple(state['items'])
         def worker():
             try:
-                result = convert(items, stop, lambda *data: events.put(('progress', data)),
-                                 lambda *data: events.put(('percent', data)), cancel,
-                                 lambda *data: events.put(('receipt', data)))
+                receipt_holder = {'path': None}
+                def receipt_ready(*data):
+                    receipt_holder['path'] = data[0]
+                    events.put(('receipt', data))
+                if direct:
+                    item = items[0]
+                    if fingerprint(item.source) != item.fingerprint:
+                        raise gemini_analysis.GeminiError('Source changed since preview. Preview again.')
+                    item.attempted_this_run = True
+                    item.completed_this_run = True
+                    item.completed = True
+                    item.outcome = 'Done'
+                    result = (0, 0, 0)
+                else:
+                    result = convert(items, stop, lambda *data: events.put(('progress', data)),
+                                     lambda *data: events.put(('percent', data)), cancel,
+                                     receipt_ready)
+                if online and any(item.completed_this_run for item in items):
+                    saved, online_failed = analyze_completed(
+                        items, reviewed_prompt, gemini_analysis.DEFAULT_MODEL, cancel,
+                        lambda *data: events.put(('progress', data)), receipt_holder['path'])
+                    events.put(('gemini', (saved, online_failed)))
                 events.put(('done', result))
             except Exception as exc:
                 events.put(('error', str(exc)))
@@ -977,7 +1409,7 @@ def main():
         stop.set()
         cancel_button.configure(state='disabled')
         stop_button.configure(state='disabled')
-        status.set('Cancelling the current conversion… Any partial output will be kept.')
+        status.set('Cancelling the current operation… Converted videos and any partial output will be kept.')
 
     review_actions = ttk.Frame(actions)
     review_actions.grid(row=0, column=0, sticky='w')
@@ -989,6 +1421,10 @@ def main():
     start_button = ttk.Button(actions, text='Convert ready files', style='Accent.TButton',
                               command=do_convert, state='disabled')
     start_button.grid(row=0, column=2, sticky='e', padx=(10, 0))
+    direct_button = ttk.Button(actions, text='Upload original to Gemini', style='Accent.TButton',
+                               command=do_convert, state='disabled')
+    direct_button.grid(row=0, column=2, sticky='e', padx=(10, 0))
+    direct_button.grid_remove()
 
     interrupt_actions = ttk.Frame(actions)
     interrupt_actions.grid(row=1, column=0, columnspan=3, sticky='e', pady=(7, 0))
@@ -1010,17 +1446,26 @@ def main():
     copy_summary_button = ttk.Button(result_actions, text='Copy summary',
                                      command=copy_summary, state='disabled')
     copy_summary_button.grid(row=0, column=1, padx=5)
+    copy_details_button = ttk.Button(result_actions, text='Copy error/details',
+                                     command=copy_details, state='disabled')
+    copy_details_button.grid(row=0, column=2, padx=5)
+    view_gemini_button = ttk.Button(result_actions, text='View Gemini response',
+                                    command=view_gemini_response, state='disabled')
+    view_gemini_button.grid(row=0, column=3, padx=5)
     open_button = ttk.Button(result_actions, text='Open output folder', command=open_folder,
                              state='disabled')
-    open_button.grid(row=0, column=2, padx=5)
+    open_button.grid(row=0, column=4, padx=5)
     retry_button.pack_forget()
     result_actions.grid_remove()
     view_receipt_button.grid_remove()
     copy_summary_button.grid_remove()
+    copy_details_button.grid_remove()
+    view_gemini_button.grid_remove()
     open_button.grid_remove()
 
-    for button in [*controls, start_button, stop_button, cancel_button, retry_button,
-                   view_receipt_button, copy_summary_button, open_button]:
+    for button in [*controls, start_button, direct_button, stop_button, cancel_button, retry_button,
+                   view_receipt_button, copy_summary_button, copy_details_button,
+                   view_gemini_button, open_button]:
         if isinstance(button, (ttk.Button, ttk.Menubutton)):
             button.tooltip = Tooltip(button, BUTTON_HINTS[str(button.cget('text'))])
 
@@ -1041,7 +1486,8 @@ def main():
                         tree.insert('', 'end', iid=str(index),
                                     values=(item.source.name, source_size,
                                             review_duration(item.duration), review_bit_depth(item),
-                                            item.output.name, row_status), tags=(row_status,))
+                                            review_output_size(item), item.output.name, row_status),
+                                    tags=(row_status,))
                     ready = sum(not item.error and not item.completed for item in data)
                     completed = sum(item.completed for item in data)
                     batch_storage = storage_summary(data)
@@ -1053,9 +1499,18 @@ def main():
                     busy(False)
                     file_progress_text.set('Current file: ready to convert' if ready else 'Current file: no ready files')
                     status.set(f'{ready} ready · {len(data) - ready - completed} blocked · {completed} already completed.'
-                               + ' Review the list, then convert ready files.')
+                               + (' Review the file, then upload it.' if data and data[0].direct_upload else
+                                  ' Review the list, then convert ready files.'))
                     if ready:
-                        start_button.configure(state='normal')
+                        if data[0].direct_upload:
+                            start_button.grid_remove()
+                            direct_button.grid()
+                            direct_button.configure(state='normal')
+                            file_progress_text.set('Current file: ready to upload without conversion')
+                        else:
+                            direct_button.grid_remove()
+                            start_button.grid()
+                            start_button.configure(state='normal')
                     if data:
                         receipt_paths = {item.receipt_path for item in data if item.receipt_path}
                         previous_receipt = (max(receipt_paths, key=lambda path: path.name)
@@ -1068,8 +1523,10 @@ def main():
                             view_receipt_button.grid()
                             copy_summary_button.grid()
                         open_button.configure(state='normal')
+                        copy_details_button.configure(state='normal')
                         result_actions.grid()
                         open_button.grid()
+                        copy_details_button.grid()
                         if any(not item.completed for item in data):
                             retry_button.configure(state='normal')
                             retry_button.pack(side='left', padx=5)
@@ -1089,6 +1546,12 @@ def main():
                         file_progress_text.set('Current file: failed — select the row for details')
                     elif label == 'Interrupted':
                         file_progress_text.set('Current file: cancelled — partial output kept if created')
+                    elif label in ('Uploading', 'Processing', 'Analyzing'):
+                        progress.configure(mode='indeterminate')
+                        progress.start(12)
+                        stop_button.configure(state='disabled')
+                        file_progress_text.set(f'Current file: {label.lower()} with Gemini')
+                        status.set(message)
                     show_details()
                 elif kind == 'percent':
                     file_percent, file_eta, batch_percent, batch_eta = data
@@ -1110,8 +1573,10 @@ def main():
                         message += f'\n{state["receipt_error"]}'
                     status.set(message)
                     open_button.configure(state='normal')
+                    copy_details_button.configure(state='normal')
                     result_actions.grid()
                     open_button.grid()
+                    copy_details_button.grid()
                     if any(not item.completed for item in state['items']):
                         retry_button.configure(state='normal')
                         retry_button.pack(side='left', padx=5)
@@ -1131,6 +1596,13 @@ def main():
                         view_receipt_button.grid()
                     if run_summary:
                         copy_summary_button.grid()
+                elif kind == 'gemini':
+                    saved, online_failed = data
+                    if saved:
+                        state['gemini_response'] = saved[-1]
+                        view_gemini_button.configure(state='normal')
+                        result_actions.grid()
+                        view_gemini_button.grid()
                 elif kind == 'error':
                     busy(False)
                     file_progress_text.set('Current file: operation failed')
@@ -1140,8 +1612,10 @@ def main():
                         retry_button.configure(state='normal')
                         retry_button.pack(side='left', padx=5)
                         open_button.configure(state='normal')
+                        copy_details_button.configure(state='normal')
                         result_actions.grid()
                         open_button.grid()
+                        copy_details_button.grid()
                     messagebox.showerror('VideoTool', data, parent=root)
         except queue.Empty:
             pass
@@ -1163,6 +1637,8 @@ def main():
         invalidate()
     location.trace_add('write', location_changed)
     advanced_reference.trace_add('write', show_advanced_reference)
+    analyze_with_gemini.trace_add('write', gemini_option_changed)
+    direct_gemini_upload.trace_add('write', direct_upload_changed)
     preset_name.trace_add('write', mode_changed)
     target_size.trace_add('write', lambda *args: invalidate())
     mode_changed()
@@ -1172,4 +1648,5 @@ def main():
 
 
 if __name__ == '__main__':
+    use_project_environment()
     raise SystemExit(main())

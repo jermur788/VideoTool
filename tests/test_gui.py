@@ -27,6 +27,23 @@ class GuiTests(unittest.TestCase):
         with patch('videotool.inspect_video', return_value=self.metadata), patch('videotool.shutil.which', return_value='ffmpeg'):
             return gui.preview(self.source, **kwargs)
 
+    def test_direct_gui_launch_switches_to_project_environment(self):
+        expected_environment = Path(gui.__file__).resolve().parent / '.venv'
+        expected_python = expected_environment / 'bin' / 'python'
+        with patch.object(gui.Path, 'is_file', return_value=True), \
+                patch.object(gui.sys, 'prefix', '/usr'), patch.object(gui.os, 'execv') as execute:
+            gui.use_project_environment()
+        execute.assert_called_once()
+        self.assertEqual(execute.call_args.args[0], str(expected_python))
+        self.assertEqual(execute.call_args.args[1][0], str(expected_python))
+
+    def test_project_environment_does_not_restart_itself(self):
+        environment = Path(gui.__file__).resolve().parent / '.venv'
+        with patch.object(gui.Path, 'is_file', return_value=True), \
+                patch.object(gui.sys, 'prefix', str(environment)), patch.object(gui.os, 'execv') as execute:
+            gui.use_project_environment()
+        execute.assert_not_called()
+
     def test_preview_creates_no_output(self):
         with patch('videotool.subprocess.run') as run:
             items = self.make_preview()
@@ -35,6 +52,23 @@ class GuiTests(unittest.TestCase):
         self.assertFalse(items[0].error)
         self.assertFalse(items[0].output.exists())
         self.assertEqual(items[0].output.name, 'clip_davinci.mov')
+
+    def test_direct_gemini_preview_uses_original_without_conversion(self):
+        with patch('videotool.inspect_video', return_value=self.metadata):
+            item = gui.preview_direct_gemini(self.source)
+        self.assertTrue(item.direct_upload)
+        self.assertEqual(item.source, self.source)
+        self.assertEqual(item.output, self.source)
+        self.assertEqual(item.command, [])
+        self.assertIn('No conversion will run', item.detail)
+
+    def test_direct_gemini_preview_refuses_folder_and_unsupported_file(self):
+        with self.assertRaisesRegex(Exception, 'one video file'):
+            gui.preview_direct_gemini(self.folder, folder=True)
+        unsupported = self.folder / 'notes.txt'
+        unsupported.write_text('not a video')
+        with self.assertRaisesRegex(Exception, 'does not support'):
+            gui.preview_direct_gemini(unsupported)
 
     def test_location_names_continue_after_existing_numbers(self):
         (self.folder / 'second.mp4').write_bytes(b'second')
@@ -222,6 +256,32 @@ class GuiTests(unittest.TestCase):
         self.assertEqual(gui.estimate(1, 100, 1), (1, None))
         for value in ('NaN', 'inf', '-1', None, 'bad'):
             self.assertEqual(gui.duration_seconds({'format': {'duration': value}}), 0)
+
+    def test_review_output_size_is_clearly_approximate(self):
+        item = gui.Conversion(self.source, self.folder / 'planned.mp4', [],
+                              preset='youtube', estimated_bytes=12_300_000)
+        self.assertEqual(gui.review_output_size(item), '~12.3 MB')
+        item.direct_upload = True
+        self.assertEqual(gui.review_output_size(item), 'No copy')
+
+    def test_upload_preview_estimate_appears_in_details_and_batch_storage(self):
+        metadata = {'format': {'duration': '60'}, 'streams': [
+            {'index': 0, 'codec_type': 'video', 'width': 1920, 'height': 1080,
+             'avg_frame_rate': '25/1', 'field_order': 'progressive',
+             'color_transfer': 'bt709', 'color_primaries': 'bt709',
+             'color_space': 'bt709'},
+            {'index': 1, 'codec_type': 'audio', 'channels': 2},
+        ]}
+        with patch('videotool.inspect_video', return_value=metadata), \
+                patch('videotool.shutil.which', return_value='ffmpeg'), \
+                patch('videotool.shutil.disk_usage') as usage:
+            usage.return_value.free = 2_000_000_000
+            item = gui.preview(self.source, preset='youtube')[0]
+        self.assertGreater(item.estimated_bytes, 0)
+        self.assertIn('Approximate output:', item.detail)
+        summary = gui.storage_summary([item])
+        self.assertIn('Estimated batch output for all 1 ready file:', summary)
+        self.assertIn('Approximate only', summary)
 
     def test_reference_settings_and_storage_are_shown(self):
         reference = self.folder / 'working.mov'

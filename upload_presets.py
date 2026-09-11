@@ -23,6 +23,7 @@ class UploadPlan:
     width: int
     height: int
     audio: bool
+    estimated_bytes: int
     executed_commands: list = field(default_factory=list)
 
 
@@ -104,6 +105,14 @@ def plan(source, output, metadata, preset, target_mb=380):
             raise videotool.VideoToolError(
                 f'{target_mb:g} MB is too small for this duration at the preset’s minimum quality. '
                 'Increase the target or export shorter sections from DaVinci. No output was created.')
+        estimated_bytes = min(
+            max_bytes, math.ceil((video_rate + audio_rate) * duration / 8 * 1.02))
+    else:
+        # CRF output depends heavily on picture detail and motion. This midpoint is
+        # presented as approximate and exists only for storage planning.
+        estimated_video_rate = min(35_000_000, max(
+            1_000_000, target_width * target_height * fps * 0.14))
+        estimated_bytes = math.ceil((estimated_video_rate + audio_rate) * duration / 8 * 1.03)
     command = [ffmpeg, '-hide_banner', '-v', 'error', '-nostdin', '-n', '-noautorotate',
                '-i', str(source), '-map', f"0:{video['index']}"]
     if audio:
@@ -132,14 +141,16 @@ def plan(source, output, metadata, preset, target_mb=380):
         detail += 'Surround audio is mixed down to stereo.\n'
     if max_bytes:
         detail += (f'Target: at most {target_mb:g} MB per file (decimal MB); two passes, {video_rate / 1e6:.2f} Mb/s video.\n'
+                   f'Approximate output: {videotool.readable_size(estimated_bytes)}; the target remains the hard maximum.\n'
                    'This is your size target, not a verified AI Studio limit. Actual size is checked after encoding.\n')
     else:
-        detail += 'Quality-focused encoding (CRF 18); resolution retained apart from even-pixel rounding. No size cap.\n'
+        detail += (f'Quality-focused encoding (CRF 18); resolution retained apart from even-pixel rounding. No size cap.\n'
+                   f'Approximate output: {videotool.readable_size(estimated_bytes)}; actual size may be much smaller or larger depending on motion and picture detail.\n')
     if any(video.get(key) in unknown for key in ('color_space', 'color_transfer', 'color_primaries')):
         detail += 'Some color tags are missing: use a finished SDR Rec.709 export and check the result.\n'
     detail += 'Lossy copy. No HDR/log tone mapping. Upload manually after checking picture and sound.'
     return UploadPlan(source, output, command, first_pass, duration, max_bytes, detail,
-                      target_width, target_height, audio is not None)
+                      target_width, target_height, audio is not None, estimated_bytes)
 
 
 def execute(plan, progress, cancel=None):

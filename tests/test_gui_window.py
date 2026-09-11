@@ -112,6 +112,9 @@ class DesktopWorkflowTest(unittest.TestCase):
                             state['stage'] = 2
                         elif stage == 2 and buttons['Preview retry'].instate(['!disabled']):
                             self.assertEqual([tree.set(row, 'status') for row in rows], ['Done', 'Failed'])
+                            tree.selection_set('1')
+                            buttons['Copy error/details'].invoke()
+                            self.assertIn('Simulated failure for retry check', root.clipboard_get())
                             buttons['Preview retry'].invoke()
                             state['stage'] = 3
                         elif stage == 3 and buttons['Convert ready files'].instate(['!disabled']):
@@ -275,9 +278,9 @@ class TooltipTest(unittest.TestCase):
 class UploadDesktopTest(unittest.TestCase):
     def test_switch_presets_preview_and_prepare_manual_uploads(self):
         import tkinter as tk
-        from tkinter import ttk, filedialog, messagebox
+        from tkinter import ttk, filedialog, messagebox, simpledialog
         original_tk = tk.Tk
-        errors, finished = [], []
+        errors, finished, saved_keys = [], [], []
         with tempfile.TemporaryDirectory() as directory:
             folder = Path(directory)
             clip = folder / 'finished.mov'
@@ -306,7 +309,14 @@ class UploadDesktopTest(unittest.TestCase):
                                         str(w.cget('text')) == 'Advanced settings')
                         progress_panel = next(w for w in widgets if isinstance(w, ttk.LabelFrame) and
                                               str(w.cget('text')) == 'Progress')
-                        details = next(w for w in widgets if isinstance(w, tk.Text))
+                        details = next(w for w in widgets if isinstance(w, tk.Text) and
+                                       str(w.cget('state')) == 'disabled')
+                        prompt = next(w for w in widgets if isinstance(w, tk.Text) and
+                                      str(w.cget('height')) == '6')
+                        gemini_toggle = next(w for w in widgets if isinstance(w, ttk.Checkbutton) and
+                                             str(w.cget('text')) == 'Analyze converted video with Gemini')
+                        direct_toggle = next(w for w in widgets if isinstance(w, ttk.Checkbutton) and
+                                             str(w.cget('text')) == 'Upload original directly to Gemini (skip conversion)')
                         stage = state['stage']
                         if stage == 0:
                             self.assertTrue(size.instate(['disabled']))
@@ -321,11 +331,44 @@ class UploadDesktopTest(unittest.TestCase):
                             self.assertEqual(reference.master.winfo_manager(), 'grid',
                                              'Advanced DaVinci reference should be revealed on request')
                             root.nametowidget(str(buttons['Choose source'].cget('menu'))).invoke(0)
+                            self.assertEqual(filedialog.askopenfilename.call_args.kwargs['initialdir'],
+                                             str(folder))
                             choice.set('AI Studio upload')
                             root.update_idletasks()
                             self.assertTrue(size.instate(['!disabled']))
                             self.assertEqual(size.master.winfo_manager(), 'grid',
                                              'AI size should be visible for AI Studio')
+                            self.assertEqual(gemini_toggle.master.winfo_manager(), 'grid')
+                            key_menu = root.nametowidget(str(buttons['Gemini key…'].cget('menu')))
+                            self.assertEqual(key_menu.entrycget(0, 'label'), 'Save or replace key')
+                            self.assertEqual(key_menu.entrycget(1, 'label'), 'Remove saved key')
+                            key_menu.invoke(0)
+                            self.assertEqual(saved_keys, ['temporary-test-key'])
+                            self.assertFalse(prompt.winfo_ismapped())
+                            gemini_toggle.invoke()
+                            root.update_idletasks()
+                            self.assertTrue(prompt.winfo_ismapped())
+                            self.assertTrue(direct_toggle.instate(['!disabled']))
+                            prompt.delete('1.0', 'end')
+                            prompt.insert('1.0', 'A replacement prompt')
+                            buttons['Restore default prompt'].invoke()
+                            self.assertIn('chronological summary', prompt.get('1.0', 'end'))
+                            gemini_toggle.invoke()
+                            root.update_idletasks()
+                            self.assertFalse(prompt.winfo_ismapped())
+                            direct_toggle.invoke()
+                            root.update_idletasks()
+                            self.assertTrue(prompt.winfo_ismapped())
+                            self.assertFalse(gemini_toggle.instate(['selected']))
+                            self.assertEqual(size.master.winfo_manager(), '')
+                            self.assertEqual(buttons['Upload original to Gemini'].winfo_manager(), 'grid')
+                            self.assertEqual(buttons['Convert ready files'].winfo_manager(), '')
+                            self.assertEqual(buttons['Output folder'].winfo_manager(), '')
+                            direct_toggle.invoke()
+                            root.update_idletasks()
+                            self.assertEqual(size.master.winfo_manager(), 'grid')
+                            self.assertFalse(prompt.winfo_ismapped())
+                            self.assertEqual(buttons['Convert ready files'].winfo_manager(), 'grid')
                             self.assertEqual(reference.master.master.winfo_manager(), '',
                                              'DaVinci reference should be hidden for AI Studio')
                             self.assertEqual(size.get(), '380')
@@ -335,6 +378,7 @@ class UploadDesktopTest(unittest.TestCase):
                             state['stage'] = 1
                         elif stage == 1 and buttons['Convert ready files'].instate(['!disabled']):
                             self.assertEqual(tree.set('0', 'output'), 'finished_aistudio.mp4')
+                            self.assertTrue(tree.set('0', 'estimate').startswith('~'))
                             self.assertNotEqual(tree.set('0', 'size'), '')
                             self.assertNotEqual(tree.set('0', 'duration'), '—')
                             self.assertNotEqual(tree.set('0', 'depth'), '—')
@@ -360,6 +404,7 @@ class UploadDesktopTest(unittest.TestCase):
                             state['stage'] = 3
                         elif stage == 3 and buttons['Convert ready files'].instate(['!disabled']):
                             self.assertEqual(tree.set('0', 'output'), 'finished_youtube.mp4')
+                            self.assertTrue(tree.set('0', 'estimate').startswith('~'))
                             buttons['Convert ready files'].invoke()
                             state['stage'] = 4
                         elif stage == 4 and buttons['Preview'].instate(['!disabled']):
@@ -379,8 +424,13 @@ class UploadDesktopTest(unittest.TestCase):
                         root.destroy()
                 root.after(100, check)
                 return root
-            with patch('tkinter.Tk', create_root), patch.object(filedialog, 'askopenfilename', return_value=str(clip)), \
-                    patch.object(messagebox, 'showerror', side_effect=lambda *a, **k: errors.append(a)):
+            with patch('tkinter.Tk', create_root), \
+                    patch('videotool_gui.user_settings.default_source_folder', return_value=folder), \
+                    patch.object(filedialog, 'askopenfilename', return_value=str(clip)), \
+                    patch.object(simpledialog, 'askstring', return_value='temporary-test-key'), \
+                    patch.object(messagebox, 'showerror', side_effect=lambda *a, **k: errors.append(a)), \
+                    patch('videotool_gui.gemini_analysis.save_api_key',
+                          side_effect=lambda value: saved_keys.append(value)):
                 gui.main()
         self.assertEqual(errors, [])
         self.assertTrue(finished)

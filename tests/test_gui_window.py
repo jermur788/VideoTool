@@ -15,6 +15,57 @@ import gemini_analysis
 
 @unittest.skipUnless(os.environ.get('VIDEOTOOL_GUI_TESTS') == '1', 'Desktop check is opt-in')
 class DesktopWorkflowTest(unittest.TestCase):
+    def test_small_window_keeps_actions_visible_and_page_scrollable(self):
+        import tkinter as tk
+        from tkinter import ttk
+        original_tk = tk.Tk
+        errors, finished = [], []
+
+        def descendants(widget):
+            for child in widget.winfo_children():
+                yield child
+                yield from descendants(child)
+
+        def create_root():
+            root = original_tk()
+
+            def check():
+                try:
+                    root.geometry('800x600')
+                    root.update_idletasks()
+                    widgets = list(descendants(root))
+                    preview = next(w for w in widgets if isinstance(w, ttk.Button) and
+                                   str(w.cget('text')) == 'Preview')
+                    page_scrollbar = next(w for w in widgets if
+                                          getattr(w, 'videotool_page_scrollbar', False))
+                    panels = {str(w.cget('text')): w for w in widgets
+                              if isinstance(w, ttk.LabelFrame)}
+                    self.assertTrue(page_scrollbar.winfo_ismapped())
+                    first, last = page_scrollbar.get()
+                    self.assertLess(last, 1.0)
+                    self.assertLessEqual(preview.winfo_rooty() + preview.winfo_height(),
+                                         root.winfo_rooty() + root.winfo_height())
+                    self.assertEqual(panels['1  Choose a format'].winfo_rootx(),
+                                     panels['2  Choose source and destination'].winfo_rootx())
+                    self.assertLess(panels['1  Choose a format'].winfo_rooty(),
+                                    panels['2  Choose source and destination'].winfo_rooty())
+                    root.event_generate('<Button-5>')
+                    root.update_idletasks()
+                    self.assertGreater(page_scrollbar.get()[0], first)
+                    finished.append(True)
+                except BaseException as exc:
+                    errors.append(exc)
+                finally:
+                    root.destroy()
+
+            root.after(150, check)
+            return root
+
+        with patch('tkinter.Tk', create_root):
+            gui.main()
+        self.assertEqual(errors, [])
+        self.assertTrue(finished)
+
     def test_resumable_analysis_is_prominent_after_preview(self):
         import tkinter as tk
         from tkinter import ttk, filedialog
@@ -471,8 +522,10 @@ class UploadDesktopTest(unittest.TestCase):
                         if stage == 0:
                             root.geometry('1200x900')
                             root.update_idletasks()
-                            self.assertFalse(any(isinstance(w, tk.Canvas) for w in widgets),
-                                             'The main workflow should not require a page scrollbar')
+                            page_scrollbar = next(w for w in widgets if
+                                                  getattr(w, 'videotool_page_scrollbar', False))
+                            self.assertTrue(page_scrollbar.winfo_ismapped(),
+                                            'The page scrollbar should remain available')
                             self.assertTrue(size.instate(['disabled']))
                             self.assertEqual(size.master.winfo_manager(), '', 'AI size should be hidden for DaVinci')
                             self.assertEqual(reference.master.winfo_manager(), '',

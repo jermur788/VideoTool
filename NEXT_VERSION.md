@@ -89,6 +89,10 @@ Version 0.12.1 makes the Google Drive connection step cancellable and applies a
 five-minute limit while waiting for the browser. Closing VideoTool during that
 sign-in step closes immediately instead of showing conversion controls.
 
+Version 0.12.2 makes the complete desktop page responsive: narrow windows stack
+setup sections, the page remains vertically scrollable, and primary actions stay
+visible in a fixed footer.
+
 Desktop packaging is also implemented at version 0.7.0: a user-level installer
 adds an application-menu launcher and scalable icon, the About panel reports the
 version and local readiness, updates replace only a recognized managed install,

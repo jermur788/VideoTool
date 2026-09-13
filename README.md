@@ -71,9 +71,10 @@ before uninstalling if you do not want to retain it.
 
 Hover over any button for a short explanation, including buttons that are currently
 disabled. Hints disappear when you move away, click, press Escape, or change focus.
-The format, source, and Gemini settings share one compact row so the review,
-progress, and result controls remain visible without scrolling the whole window.
-Gemini's main and creator prompts use tabs when both are needed.
+The page scrolls when the window is shorter than its contents. Narrow windows stack
+the format, source, and Gemini sections instead of clipping them, while the status
+and primary Preview/Run actions remain visible at the bottom. Gemini's main and
+creator prompts use tabs when both are needed.
 
 On Linux Mint/Ubuntu, install the window library once:
 

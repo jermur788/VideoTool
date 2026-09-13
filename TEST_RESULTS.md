@@ -1,5 +1,15 @@
 Test results — VideoTool
 
+## Responsive scrollable window — 2026-09-13
+
+- Version 0.12.2 gives the complete page a persistent vertical scrollbar and
+  mouse-wheel support when the window is shorter than its contents.
+- Narrow windows stack the setup sections vertically, while the status and primary
+  Preview/Run actions remain fixed at the bottom of the window.
+- A desktop-window check verifies the 800 × 600 layout, visible primary controls,
+  stacked setup sections, and working page scrolling.
+- The complete suite passed: 141 tests, including all eight desktop-window checks.
+
 ## Cancellable Google Drive sign-in — 2026-09-13
 
 - Version 0.12.1 keeps the desktop responsive while Google sign-in is open.

@@ -778,10 +778,23 @@ def main():
     help_menu.add_command(label='About VideoTool', command=show_about)
     menu_bar.add_cascade(label='Help', menu=help_menu)
     root.configure(menu=menu_bar)
-    body = ttk.Frame(root, padding=(18, 14))
-    body.pack(fill='both', expand=True)
+    footer = ttk.Frame(root, padding=(18, 7, 30, 12))
+    footer.pack(side='bottom', fill='x')
+    footer.columnconfigure(0, weight=1)
+    viewport = ttk.Frame(root)
+    viewport.pack(side='top', fill='both', expand=True)
+    viewport.rowconfigure(0, weight=1)
+    viewport.columnconfigure(0, weight=1)
+    page_canvas = tk.Canvas(viewport, background='#f3f5f7', highlightthickness=0,
+                            borderwidth=0)
+    page_canvas.grid(row=0, column=0, sticky='nsew')
+    page_scrollbar = ttk.Scrollbar(viewport, orient='vertical', command=page_canvas.yview)
+    page_scrollbar.grid(row=0, column=1, sticky='ns')
+    page_scrollbar.videotool_page_scrollbar = True
+    page_canvas.configure(yscrollcommand=page_scrollbar.set)
+    body = ttk.Frame(page_canvas, padding=(18, 14))
+    body_window = page_canvas.create_window((0, 0), window=body, anchor='nw')
     body.columnconfigure(0, weight=1)
-    body.rowconfigure(3, weight=1)
     ttk.Label(body, text='Prepare your videos', style='Title.TLabel').grid(sticky='w')
     subtitle = tk.StringVar(value='Choose a format and footage, review the files, then convert.')
     ttk.Label(body, textvariable=subtitle, style='Subtitle.TLabel').grid(
@@ -1267,6 +1280,8 @@ def main():
                                                  'View Gemini response')))
             if hasattr(view_gemini_button, 'tooltip'):
                 view_gemini_button.tooltip.text = BUTTON_HINTS[str(view_gemini_button.cget('text'))]
+        narrow_layout['enabled'] = None
+        arrange_for_width(page_canvas.winfo_width())
 
     def save_gemini_key():
         value = simpledialog.askstring(
@@ -1566,10 +1581,10 @@ def main():
     ttk.Label(progress_frame, textvariable=batch_progress_text).grid(row=2, sticky='w')
     batch_progress = ttk.Progressbar(progress_frame, mode='determinate')
     batch_progress.grid(row=3, sticky='ew', pady=(3, 0))
-    ttk.Label(body, textvariable=status, style='Status.TLabel', wraplength=960,
-              justify='left').grid(row=5, sticky='ew', pady=(10, 8))
-    actions = ttk.Frame(body)
-    actions.grid(row=6, sticky='ew')
+    ttk.Label(footer, textvariable=status, style='Status.TLabel', wraplength=960,
+              justify='left').grid(row=0, column=0, sticky='ew', pady=(0, 7))
+    actions = ttk.Frame(footer)
+    actions.grid(row=1, column=0, sticky='ew')
     actions.columnconfigure(1, weight=1)
 
     def busy(value):
@@ -1934,8 +1949,8 @@ def main():
     cancel_button.pack(side='left', padx=(5, 0))
     interrupt_actions.grid_remove()
 
-    result_actions = ttk.Frame(body)
-    result_actions.grid(row=7, sticky='e', pady=(8, 0))
+    result_actions = ttk.Frame(footer)
+    result_actions.grid(row=2, column=0, sticky='e', pady=(8, 0))
     view_receipt_button = ttk.Button(result_actions, text='View processing receipt',
                                      command=view_receipt, state='disabled')
     view_receipt_button.grid(row=0, column=0, padx=5)
@@ -1947,16 +1962,16 @@ def main():
     copy_details_button.grid(row=0, column=2, padx=5)
     view_gemini_button = ttk.Button(result_actions, text='View Gemini response',
                                     command=view_gemini_response, state='disabled')
-    view_gemini_button.grid(row=0, column=3, padx=5)
+    view_gemini_button.grid(row=1, column=0, padx=5, pady=(6, 0))
     open_button = ttk.Button(result_actions, text='Open output folder', command=open_folder,
                              state='disabled')
-    open_button.grid(row=0, column=4, padx=5)
+    open_button.grid(row=1, column=1, padx=5, pady=(6, 0))
     open_drive_button = ttk.Button(result_actions, text='Open Google Doc',
                                    command=open_drive_response, state='disabled')
-    open_drive_button.grid(row=1, column=3, padx=5, pady=(6, 0))
+    open_drive_button.grid(row=1, column=2, padx=5, pady=(6, 0))
     retry_drive_button = ttk.Button(result_actions, text='Retry Google Drive',
                                     command=retry_drive_delivery, state='disabled')
-    retry_drive_button.grid(row=1, column=3, padx=5, pady=(6, 0))
+    retry_drive_button.grid(row=1, column=2, padx=5, pady=(6, 0))
     retry_button.pack_forget()
     result_actions.grid_remove()
     view_receipt_button.grid_remove()
@@ -2258,6 +2273,60 @@ def main():
 
     root.bind('<Destroy>', cleanup, add='+')
     root.protocol('WM_DELETE_WINDOW', close)
+
+    narrow_layout = {'enabled': None}
+
+    def arrange_for_width(width):
+        narrow = width < 1040
+        if narrow_layout['enabled'] == narrow:
+            return
+        narrow_layout['enabled'] = narrow
+        if narrow:
+            setup.columnconfigure(0, weight=1, uniform='')
+            setup.columnconfigure(1, weight=0, uniform='')
+            setup.columnconfigure(2, weight=0, uniform='')
+            workflow.grid_configure(row=0, column=0, sticky='ew', padx=0, pady=(0, 8))
+            selection.grid_configure(row=1, column=0, sticky='ew', padx=0, pady=(0, 8))
+            gemini_options.grid_configure(row=2, column=0, sticky='ew', padx=0, pady=0)
+        else:
+            setup.columnconfigure(0, weight=1, uniform='setup')
+            setup.columnconfigure(1, weight=1, uniform='setup')
+            setup.columnconfigure(2, weight=(1 if selected_preset() == 'aistudio' else 0),
+                                  uniform=('setup' if selected_preset() == 'aistudio' else ''))
+            workflow.grid_configure(row=0, column=0, sticky='nsew', padx=(0, 5), pady=0)
+            selection.grid_configure(row=0, column=1, sticky='nsew', padx=(5, 0), pady=0)
+            gemini_options.grid_configure(row=0, column=2, sticky='nsew', padx=(10, 0), pady=0)
+
+    def resize_page(event):
+        page_canvas.itemconfigure(body_window, width=event.width)
+        arrange_for_width(event.width)
+
+    def update_page_scrollregion(event=None):
+        page_canvas.configure(scrollregion=page_canvas.bbox('all'))
+
+    def page_wheel(event):
+        widget = event.widget
+        while widget is not None and widget != root:
+            if isinstance(widget, (tk.Text, ttk.Treeview)):
+                return None
+            widget = getattr(widget, 'master', None)
+        bounds = page_canvas.bbox('all')
+        if not bounds or bounds[3] <= page_canvas.winfo_height():
+            return None
+        if getattr(event, 'num', None) == 4:
+            direction = -1
+        elif getattr(event, 'num', None) == 5:
+            direction = 1
+        else:
+            direction = -1 if event.delta > 0 else 1
+        page_canvas.yview_scroll(direction * 3, 'units')
+        return 'break'
+
+    page_canvas.bind('<Configure>', resize_page, add='+')
+    body.bind('<Configure>', update_page_scrollregion, add='+')
+    root.bind('<MouseWheel>', page_wheel, add='+')
+    root.bind('<Button-4>', page_wheel, add='+')
+    root.bind('<Button-5>', page_wheel, add='+')
     def location_changed(*args):
         update_naming_note()
         invalidate()

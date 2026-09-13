@@ -76,13 +76,22 @@ trail while the original incomplete report remains unchanged.
 Version 0.11.1 makes detected recovery visible in the main Preview banner and status
 line rather than only inside the selected-file details.
 
+Version 0.12.0 implements optional Google Drive delivery. VideoTool uses an
+installed-desktop OAuth connection with the narrow `drive.file` scope, stores its
+client setup and refreshable token in owner-only per-user files, creates or reuses
+**My Drive / VideoTool Gemini Results**, and writes the already-saved local Markdown
+response into a native Google Doc. A local Drive receipt records the Doc link and
+ID. Failed Drive delivery can be retried from the current result or by choosing an
+existing local response after restarting, without uploading the video or running
+Gemini again.
+
 Desktop packaging is also implemented at version 0.7.0: a user-level installer
 adds an application-menu launcher and scalable icon, the About panel reports the
 version and local readiness, updates replace only a recognized managed install,
 and uninstall preserves preferences unless their removal is explicitly requested.
 
-Google Drive OAuth, native Google Doc creation, Drive-only retry, online metadata
-in receipts/history, and live-account testing remain for the next stage.
+Online metadata in conversion history, remote Gemini cleanup, and opt-in
+live-account testing remain future work.
 
 ## Goal
 

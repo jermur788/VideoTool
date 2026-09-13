@@ -11,9 +11,11 @@ import subprocess
 import sys
 import os
 import sqlite3
+import webbrowser
 from urllib.parse import unquote, urlparse
 import conversion_history
 import creator_benchmark
+import drive_delivery
 import frame_benchmark
 import gemini_analysis
 import health_checks
@@ -53,6 +55,7 @@ BUTTON_HINTS = {
     'Restore purpose prompt': 'Restore the focused default prompt for the selected creator purpose.',
     'View Gemini response': 'Open the latest Gemini response saved as Markdown beside the prepared video.',
     'Gemini key…': 'Save, replace, or remove the Gemini API key in your system password store.',
+    'Google Drive…': 'Connect the Google account where VideoTool should save native Google Docs.',
     'Upload original to Gemini': 'Upload the selected video to Gemini without converting or changing it.',
     'Run creator benchmark': 'Upload one finished video once and compare the normal summary with the creator-review prompt.',
     'Run combined analysis': 'Analyze the native video and timestamped frames, then combine both results.',
@@ -60,6 +63,8 @@ BUTTON_HINTS = {
     'View benchmark report': 'Open the local Markdown comparison report saved beside the finished video.',
     'View combined response': 'Open the final response produced from the video and frame analyses.',
     'View recovery report': 'Open the report showing which combined-analysis stages were preserved.',
+    'Open Google Doc': 'Open the Gemini response saved in Google Drive.',
+    'Retry Google Drive': 'Save the existing local response to Drive without running Gemini again.',
     'Copy error/details': 'Copy the selected video’s full status and error details to the clipboard.',
 }
 
@@ -99,6 +104,11 @@ class Conversion:
     gemini_error: str = ''
     gemini_response_path: object = None
     gemini_remote_name: str = ''
+    drive_requested: bool = False
+    drive_status: str = ''
+    drive_error: str = ''
+    drive_document_id: str = ''
+    drive_url: str = ''
     direct_upload: bool = False
     creator_benchmark: bool = False
     frame_benchmark: bool = False
@@ -190,7 +200,7 @@ def interrupt_controls(benchmark=False, direct=False, frame=False):
 def about_text(checks=None):
     return (f'VideoTool\nInstalled/app version: {__version__}\n\nReadiness\n'
             f'{health_checks.report(checks)}\n\n'
-            'Gemini is optional. Readiness checks never display your API key.')
+            'Online services are optional. Readiness checks never display your API key or Google credentials.')
 
 
 def estimate(processed, duration, elapsed, complete=False):
@@ -429,6 +439,10 @@ def completion_summary(items):
                 f'{online_cancelled} cancelled.')
         if online_failed or online_cancelled:
             text += '\nSelect the video and use Copy error/details for the full error.'
+        delivered = sum(bool(item.drive_url) for item in items)
+        drive_failed = sum(item.drive_status == 'Failed' for item in items)
+        if delivered or drive_failed:
+            text += f'\nGoogle Drive: {delivered} Google Doc(s) saved · {drive_failed} waiting to retry.'
         return text
     completed = sum(item.completed for item in items)
     failed = sum(not item.completed and (bool(item.error) or item.outcome == 'Failed') for item in items)
@@ -446,7 +460,37 @@ def completion_summary(items):
             summary += '\nSelect the video and use Copy error/details for the full error.'
     elif any(item.preset != 'davinci' for item in items):
         summary += '\nCompleted files are for manual upload. Nothing has been uploaded.'
+    delivered = sum(bool(item.drive_url) for item in items)
+    drive_failed = sum(item.drive_status == 'Failed' for item in items)
+    if delivered or drive_failed:
+        summary += f'\nGoogle Drive: {delivered} Google Doc(s) saved · {drive_failed} waiting to retry.'
     return summary
+
+
+def deliver_saved_response(item, response_path, cancel, report, deliverer=None):
+    """Deliver an already-local result without rerunning any Gemini stage."""
+    deliverer = deliverer or drive_delivery.deliver
+    item.drive_requested = True
+
+    def stage(label, message):
+        item.drive_status = label
+        report(label, message)
+
+    try:
+        result = deliverer(response_path, cancel=cancel, report=stage)
+    except drive_delivery.DriveCancelled as exc:
+        item.drive_status = 'Cancelled'
+        item.drive_error = str(exc)
+        return None
+    except drive_delivery.DriveError as exc:
+        item.drive_status = 'Failed'
+        item.drive_error = str(exc)
+        return None
+    item.drive_status = 'Saved'
+    item.drive_error = ''
+    item.drive_document_id = result.document_id
+    item.drive_url = result.url
+    return result
 
 
 def storage_summary(items):
@@ -752,9 +796,11 @@ def main():
     direct_gemini_upload = tk.BooleanVar(value=False)
     creator_benchmark_mode = tk.BooleanVar(value=False)
     frame_benchmark_mode = tk.BooleanVar(value=False)
+    save_to_drive = tk.BooleanVar(value=False)
     creator_purpose = tk.StringVar(value=creator_benchmark.DEFAULT_PURPOSE)
     creator_prompt_drafts = creator_benchmark.PromptDrafts()
     gemini_readiness = tk.StringVar()
+    drive_readiness = tk.StringVar()
     preset_note = tk.StringVar()
     naming_note = tk.StringVar()
     configured_source_folder = user_settings.default_source_folder()
@@ -769,7 +815,8 @@ def main():
     status = tk.StringVar(value='Ready to choose footage.')
     state = {'source': None, 'folder': False, 'destination': None, 'items': [], 'busy': False,
              'messages': {}, 'reference': None, 'receipt': None, 'run_summary': '',
-             'receipt_error': '', 'gemini_response': None}
+             'receipt_error': '', 'gemini_response': None, 'drive_response': None,
+             'drive_pending': None}
     events = queue.Queue()
     stop = threading.Event()
     cancel = threading.Event()
@@ -782,6 +829,8 @@ def main():
         state['run_summary'] = ''
         state['receipt_error'] = ''
         state['gemini_response'] = None
+        state['drive_response'] = None
+        state['drive_pending'] = None
         tree.delete(*tree.get_children())
         show_details()
         file_progress_text.set('Current file: waiting')
@@ -810,10 +859,14 @@ def main():
         copy_details_button.grid_remove()
         open_button.grid_remove()
         view_gemini_button.grid_remove()
+        open_drive_button.grid_remove()
+        retry_drive_button.grid_remove()
         view_receipt_button.configure(state='disabled')
         copy_summary_button.configure(state='disabled')
         copy_details_button.configure(state='disabled')
         view_gemini_button.configure(state='disabled')
+        open_drive_button.configure(state='disabled')
+        retry_drive_button.configure(state='disabled')
         status.set('Preview this video before uploading it to Gemini.'
                    if selected_preset() == 'aistudio' and direct_gemini_upload.get()
                    else 'Preview your selection before converting.')
@@ -1052,8 +1105,24 @@ def main():
     controls.append(frame_benchmark_toggle)
     Tooltip(frame_benchmark_toggle,
             'Analyze the native video and selected frames separately, then reconcile both results.')
+    drive_row = ttk.Frame(gemini_options)
+    drive_row.grid(row=5, column=0, columnspan=2, sticky='ew', pady=(7, 0))
+    drive_row.columnconfigure(0, weight=1)
+    drive_toggle = ttk.Checkbutton(
+        drive_row, text='Save final response to Google Drive', variable=save_to_drive)
+    drive_toggle.grid(row=0, column=0, sticky='w')
+    controls.append(drive_toggle)
+    Tooltip(drive_toggle,
+            'Save the local Gemini result as a native Google Doc after analysis succeeds.')
+    drive_button = ttk.Menubutton(drive_row, text='Google Drive…')
+    drive_button.grid(row=0, column=1, sticky='e', padx=(8, 0))
+    controls.append(drive_button)
+    drive_menu = tk.Menu(drive_button, tearoff=False)
+    drive_button.configure(menu=drive_menu)
+    ttk.Label(gemini_options, textvariable=drive_readiness, style='Muted.TLabel').grid(
+        row=6, column=0, columnspan=2, sticky='w', pady=(4, 0))
     prompt_notebook = ttk.Notebook(gemini_options)
-    prompt_notebook.grid(row=5, column=0, columnspan=2, sticky='ew', pady=(8, 0))
+    prompt_notebook.grid(row=7, column=0, columnspan=2, sticky='ew', pady=(8, 0))
     prompt_options = ttk.Frame(prompt_notebook, padding=(6, 6))
     prompt_notebook.add(prompt_options, text='Standard summary')
     prompt_options.columnconfigure(0, weight=1)
@@ -1176,6 +1245,8 @@ def main():
             tree.heading('output', text='Output file')
         _ready, readiness_text = gemini_analysis.readiness()
         gemini_readiness.set(readiness_text)
+        _drive_ready, drive_text = drive_delivery.readiness()
+        drive_readiness.set(drive_text)
         if not state['busy']:
             restore_prompt_button.configure(state='normal' if online else 'disabled')
             restore_creator_prompt_button.configure(state='normal' if benchmark else 'disabled')
@@ -1183,6 +1254,8 @@ def main():
             direct_upload_toggle.configure(state='normal')
             creator_benchmark_toggle.configure(state='normal')
             frame_benchmark_toggle.configure(state='normal')
+            drive_toggle.configure(state='normal' if online else 'disabled')
+            drive_button.configure(state='normal')
             for widget in destination_controls:
                 widget.configure(state='disabled' if direct else 'normal')
             direct_button.configure(text=gemini_action_text(benchmark, frames))
@@ -1218,6 +1291,68 @@ def main():
 
     gemini_key_menu.add_command(label='Save or replace key', command=save_gemini_key)
     gemini_key_menu.add_command(label='Remove saved key', command=remove_gemini_key)
+
+    def begin_drive_connection(setup_file=None):
+        busy(True)
+        progress_frame.grid()
+        status.set('Opening Google sign-in for VideoTool…')
+        file_progress_text.set('Current file: connecting Google Drive')
+        def worker():
+            try:
+                if setup_file:
+                    drive_delivery.save_client_config(setup_file)
+                drive_delivery.connect()
+                events.put(('drive_connected', None))
+            except drive_delivery.DriveError as exc:
+                events.put(('drive_setup_error', str(exc)))
+        threading.Thread(target=worker, daemon=True).start()
+
+    def choose_drive_setup():
+        selected = filedialog.askopenfilename(
+            parent=root, title='Choose Google Desktop app OAuth setup file',
+            filetypes=[('Google OAuth JSON', '*.json'), ('All files', '*')])
+        if selected:
+            begin_drive_connection(selected)
+
+    def reconnect_drive():
+        begin_drive_connection()
+
+    def save_existing_response():
+        ready, readiness_text = drive_delivery.readiness()
+        if not ready:
+            messagebox.showerror('Google Drive is not ready', readiness_text, parent=root)
+            return
+        selected = filedialog.askopenfilename(
+            parent=root, title='Choose a saved VideoTool Gemini response',
+            filetypes=[('Markdown response', '*.md'), ('All files', '*')])
+        if not selected:
+            return
+        busy(True)
+        cancel.clear()
+        progress_frame.grid()
+        status.set('Saving the existing local response to Google Drive…')
+        file_progress_text.set('Current file: saving to Drive')
+        def worker():
+            try:
+                result = drive_delivery.deliver(selected, cancel=cancel)
+                events.put(('drive_standalone', (Path(selected), result, '')))
+            except drive_delivery.DriveError as exc:
+                events.put(('drive_standalone', (Path(selected), None, str(exc))))
+        threading.Thread(target=worker, daemon=True).start()
+
+    def disconnect_drive():
+        try:
+            removed = drive_delivery.disconnect()
+        except drive_delivery.DriveError as exc:
+            messagebox.showerror('Could not disconnect Google Drive', str(exc), parent=root)
+            return
+        show_gemini_prompt()
+        status.set('Google Drive disconnected.' if removed else 'Google Drive was not connected.')
+
+    drive_menu.add_command(label='Choose setup file and connect', command=choose_drive_setup)
+    drive_menu.add_command(label='Connect using saved setup', command=reconnect_drive)
+    drive_menu.add_command(label='Save an existing local response', command=save_existing_response)
+    drive_menu.add_command(label='Disconnect account', command=disconnect_drive)
 
     def gemini_option_changed(*args):
         if analyze_with_gemini.get() and (direct_gemini_upload.get() or
@@ -1366,6 +1501,8 @@ def main():
     tree.tag_configure('Native-video analysis', foreground='#1f5f99')
     tree.tag_configure('Frame analysis', foreground='#1f5f99')
     tree.tag_configure('Combined analysis', foreground='#1f5f99')
+    tree.tag_configure('Saving to Drive', foreground='#1f5f99')
+    tree.tag_configure('Saved to Drive', foreground='#25723b')
     tree.tag_configure('Blocked', foreground='#9c5a16')
     tree.tag_configure('Failed', foreground='#a03030')
     tree.tag_configure('Interrupted', foreground='#a03030')
@@ -1388,6 +1525,10 @@ def main():
             text += '\n' + state['messages'][index]
         if item.gemini_error and item.gemini_error not in text:
             text += f'\nGemini error: {item.gemini_error}'
+        if item.drive_url:
+            text += f'\nGoogle Doc: {item.drive_url}'
+        if item.drive_error:
+            text += f'\nGoogle Drive error: {item.drive_error}'
         return text
 
     def show_details(event=None):
@@ -1439,6 +1580,8 @@ def main():
         direct_upload_toggle.configure(state='disabled' if value else 'normal')
         creator_benchmark_toggle.configure(state='disabled' if value else 'normal')
         frame_benchmark_toggle.configure(state='disabled' if value else 'normal')
+        drive_toggle.configure(state='disabled' if value or not online else 'normal')
+        drive_button.configure(state='disabled' if value else 'normal')
         creator_purpose_box.configure(state='disabled' if value or not creator_benchmark_mode.get()
                                       else 'readonly')
         restore_creator_prompt_button.configure(
@@ -1459,6 +1602,8 @@ def main():
             copy_summary_button.configure(state='normal' if state['run_summary'] else 'disabled')
             copy_details_button.configure(state='normal' if state['items'] else 'disabled')
             view_gemini_button.configure(state='normal' if state['gemini_response'] else 'disabled')
+            open_drive_button.configure(state='normal' if state['drive_response'] else 'disabled')
+            retry_drive_button.configure(state='normal' if state['drive_pending'] else 'disabled')
 
     def do_preview():
         if not state['source']:
@@ -1481,6 +1626,7 @@ def main():
         reviewed_prompt = current_prompt()
         reviewed_creator_prompt = current_creator_prompt()
         reviewed_purpose = creator_purpose.get()
+        reviewed_drive = save_to_drive.get()
         def worker():
             try:
                 items = [preview_direct_gemini(args[0], args[1])] if direct else preview(*args)
@@ -1493,6 +1639,7 @@ def main():
                         item.gemini_requested = True
                         item.gemini_prompt = reviewed_prompt
                         item.gemini_model = gemini_analysis.DEFAULT_MODEL
+                        item.drive_requested = reviewed_drive
                         item.creator_benchmark = benchmark
                         item.frame_benchmark = frames
                         item.creator_purpose = reviewed_purpose if benchmark else ''
@@ -1510,6 +1657,9 @@ def main():
                             timing = 'without conversion' if direct else 'after conversion'
                             item.detail += (f'\nGemini upload planned for this video {timing} · Model: '
                                             f'{gemini_analysis.DEFAULT_MODEL}\nPrompt:\n{reviewed_prompt}')
+                        if item.drive_requested:
+                            item.detail += ('\nGoogle Drive delivery enabled. The local response will be saved first, '
+                                            'then copied to My Drive / VideoTool Gemini Results.')
                 events.put(('preview', items))
             except Exception as exc:
                 events.put(('error', str(exc)))
@@ -1546,6 +1696,41 @@ def main():
         except (OSError, TypeError) as exc:
             messagebox.showerror('Cannot open Gemini response', str(exc), parent=root)
 
+    def open_drive_response():
+        if not state['drive_response']:
+            return
+        if not webbrowser.open(state['drive_response']):
+            messagebox.showerror('Cannot open Google Doc',
+                                 'The web browser did not open the saved Google Doc.', parent=root)
+
+    def retry_drive_delivery():
+        pending = state['drive_pending']
+        if not pending:
+            return
+        item, response_path = pending
+        ready, readiness_text = drive_delivery.readiness()
+        if not ready:
+            messagebox.showerror('Google Drive is not ready', readiness_text, parent=root)
+            return
+        busy(True)
+        cancel.clear()
+        progress_frame.grid()
+        status.set('Retrying Google Drive delivery from the saved local response…')
+        def worker():
+            if item is None:
+                try:
+                    delivery = drive_delivery.deliver(response_path, cancel=cancel)
+                except drive_delivery.DriveError:
+                    delivery = None
+            else:
+                delivery = deliver_saved_response(
+                    item, response_path, cancel,
+                    lambda label, message: events.put(
+                        ('progress', (state['items'].index(item), label, message))))
+            events.put(('drive', (item, Path(response_path), delivery)))
+            events.put(('drive_retry_done', None))
+        threading.Thread(target=worker, daemon=True).start()
+
     def copy_summary():
         if not state['run_summary']:
             return
@@ -1572,6 +1757,7 @@ def main():
         reviewed_prompt = current_prompt()
         reviewed_creator_prompt = current_creator_prompt()
         reviewed_purpose = creator_purpose.get()
+        reviewed_drive = save_to_drive.get()
         if online and not reviewed_prompt:
             messagebox.showerror('Enter a Gemini prompt',
                                  'Paste or type the prompt to send with each video.', parent=root)
@@ -1601,6 +1787,8 @@ def main():
         state['run_summary'] = ''
         state['receipt_error'] = ''
         state['gemini_response'] = None
+        state['drive_response'] = None
+        state['drive_pending'] = None
         interrupt_actions.grid()
         stop_button.configure(state='normal')
         cancel_button.configure(state='normal')
@@ -1619,6 +1807,15 @@ def main():
         items = tuple(state['items'])
         def worker():
             try:
+                def deliver_path(item, path):
+                    if not reviewed_drive or not path:
+                        return
+                    delivery = deliver_saved_response(
+                        item, path, cancel,
+                        lambda label, message: events.put(
+                            ('progress', (items.index(item), label, message))))
+                    events.put(('drive', (item, Path(path), delivery)))
+
                 receipt_holder = {'path': None}
                 def receipt_ready(*data):
                     receipt_holder['path'] = data[0]
@@ -1651,6 +1848,8 @@ def main():
                     item.gemini_status = 'Failed' if benchmark_result.error else 'Saved'
                     item.gemini_error = benchmark_result.error
                     events.put(('benchmark', benchmark_result))
+                    if not benchmark_result.error:
+                        deliver_path(item, benchmark_result.report_path)
                 elif frames:
                     item = items[0]
                     benchmark_result = frame_benchmark.run(
@@ -1664,11 +1863,16 @@ def main():
                     item.gemini_status = 'Failed' if benchmark_result.error else 'Saved'
                     item.gemini_error = benchmark_result.error
                     events.put(('frame_benchmark', benchmark_result))
+                    if not benchmark_result.error:
+                        deliver_path(item, benchmark_result.combined_path)
                 elif online and any(item.completed_this_run for item in items):
                     saved, online_failed = analyze_completed(
                         items, reviewed_prompt, gemini_analysis.DEFAULT_MODEL, cancel,
                         lambda *data: events.put(('progress', data)), receipt_holder['path'])
                     events.put(('gemini', (saved, online_failed)))
+                    if saved:
+                        item = next(item for item in items if item.gemini_response_path == saved[-1])
+                        deliver_path(item, saved[-1])
                 events.put(('done', result))
             except Exception as exc:
                 events.put(('error', str(exc)))
@@ -1733,6 +1937,12 @@ def main():
     open_button = ttk.Button(result_actions, text='Open output folder', command=open_folder,
                              state='disabled')
     open_button.grid(row=0, column=4, padx=5)
+    open_drive_button = ttk.Button(result_actions, text='Open Google Doc',
+                                   command=open_drive_response, state='disabled')
+    open_drive_button.grid(row=1, column=3, padx=5, pady=(6, 0))
+    retry_drive_button = ttk.Button(result_actions, text='Retry Google Drive',
+                                    command=retry_drive_delivery, state='disabled')
+    retry_drive_button.grid(row=1, column=3, padx=5, pady=(6, 0))
     retry_button.pack_forget()
     result_actions.grid_remove()
     view_receipt_button.grid_remove()
@@ -1740,13 +1950,15 @@ def main():
     copy_details_button.grid_remove()
     view_gemini_button.grid_remove()
     open_button.grid_remove()
+    open_drive_button.grid_remove()
+    retry_drive_button.grid_remove()
 
     def reveal_result_actions():
         result_actions.grid()
 
     for button in [*controls, start_button, direct_button, stop_button, cancel_button, retry_button,
                    view_receipt_button, copy_summary_button, copy_details_button,
-                   view_gemini_button, open_button]:
+                   view_gemini_button, open_button, open_drive_button, retry_drive_button]:
         if isinstance(button, (ttk.Button, ttk.Menubutton)):
             button.tooltip = Tooltip(button, BUTTON_HINTS[str(button.cget('text'))])
 
@@ -1838,13 +2050,33 @@ def main():
                     elif label == 'Interrupted':
                         file_progress_text.set('Current file: cancelled — partial output kept if created')
                     elif label in ('Uploading', 'Processing', 'Analyzing', 'Extracting frames',
-                                   'Native-video analysis', 'Frame analysis', 'Combined analysis'):
+                                   'Native-video analysis', 'Frame analysis', 'Combined analysis',
+                                   'Saving to Drive', 'Saved to Drive'):
                         progress.configure(mode='indeterminate')
                         progress.start(12)
                         stop_button.configure(state='disabled')
                         file_progress_text.set(f'Current file: {label.lower()}')
                         status.set(message)
                     show_details()
+                elif kind == 'drive_standalone':
+                    response_path, delivery, error = data
+                    busy(False)
+                    if delivery:
+                        state['drive_response'] = delivery.url
+                        state['drive_pending'] = None
+                        open_drive_button.configure(state='normal')
+                        retry_drive_button.configure(state='disabled')
+                        retry_drive_button.grid_remove()
+                        open_drive_button.grid()
+                        reveal_result_actions()
+                        status.set('Existing local response saved to Google Drive. No Gemini request ran.')
+                    else:
+                        state['drive_pending'] = (None, response_path)
+                        retry_drive_button.configure(state='normal')
+                        retry_drive_button.grid()
+                        reveal_result_actions()
+                        status.set('The local response is safe. Google Drive delivery can be retried.')
+                        messagebox.showerror('Google Drive delivery needs attention', error, parent=root)
                 elif kind == 'percent':
                     file_percent, file_eta, batch_percent, batch_eta = data
                     for bar, label, title, percent, eta in (
@@ -1930,6 +2162,49 @@ def main():
                     else:
                         view_gemini_button.grid_remove()
                     copy_summary_button.grid()
+                elif kind == 'drive':
+                    item, response_path, delivery = data
+                    if delivery:
+                        state['drive_response'] = delivery.url
+                        state['drive_pending'] = None
+                        open_drive_button.configure(state='normal')
+                        retry_drive_button.configure(state='disabled')
+                        retry_drive_button.grid_remove()
+                        open_drive_button.grid()
+                        status.set(f'Google Doc saved: {delivery.title}')
+                    else:
+                        state['drive_response'] = None
+                        state['drive_pending'] = (item, response_path)
+                        if item is not None:
+                            row = str(state['items'].index(item))
+                            tree.set(row, 'status', 'Drive retry')
+                            tree.item(row, tags=('Blocked',))
+                        open_drive_button.configure(state='disabled')
+                        open_drive_button.grid_remove()
+                        retry_drive_button.configure(state='normal')
+                        retry_drive_button.grid()
+                        status.set('The local Gemini response is safe. Google Drive delivery can be retried.')
+                    reveal_result_actions()
+                    show_details()
+                elif kind == 'drive_retry_done':
+                    busy(False)
+                    if state['drive_response']:
+                        status.set('Google Drive delivery completed from the existing local response.')
+                    elif state['drive_pending']:
+                        messagebox.showerror(
+                            'Google Drive delivery needs attention',
+                            (state['drive_pending'][0].drive_error
+                             if state['drive_pending'][0] is not None else
+                             'Google Drive delivery did not complete.'), parent=root)
+                elif kind == 'drive_connected':
+                    busy(False)
+                    show_gemini_prompt()
+                    status.set('Google Drive connected. VideoTool will keep this connection for future runs.')
+                elif kind == 'drive_setup_error':
+                    busy(False)
+                    show_gemini_prompt()
+                    status.set('Google Drive connection did not complete.')
+                    messagebox.showerror('Could not connect Google Drive', data, parent=root)
                 elif kind == 'error':
                     busy(False)
                     file_progress_text.set('Current file: operation failed')
@@ -1968,6 +2243,7 @@ def main():
     direct_gemini_upload.trace_add('write', direct_upload_changed)
     creator_benchmark_mode.trace_add('write', creator_benchmark_changed)
     frame_benchmark_mode.trace_add('write', frame_benchmark_changed)
+    save_to_drive.trace_add('write', lambda *args: invalidate())
     creator_purpose.trace_add('write', creator_purpose_changed)
     preset_name.trace_add('write', mode_changed)
     target_size.trace_add('write', lambda *args: invalidate())

@@ -23,3 +23,7 @@ __pycache__/
 .DS_Store
 .env
 .venv/
+credentials.json
+client_secret*.json
+google-drive-oauth-client.json
+google-drive-token.json

@@ -1,5 +1,23 @@
 Test results — VideoTool
 
+## Native Google Drive delivery — 2026-09-13
+
+- Version 0.12.0 adds a one-time installed-desktop Google OAuth connection using
+  the narrow `drive.file` scope.
+- The local Gemini Markdown remains the primary result. VideoTool then creates or
+  reuses **My Drive / VideoTool Gemini Results**, writes a native Google Doc, and
+  records the link and ID in local JSON and readable Markdown receipts.
+- Drive failures leave the local result intact. Current-session retry and choosing
+  an existing saved response after restart perform Drive delivery without any new
+  Gemini upload or analysis.
+- Automated tests cover private OAuth setup files, native folder and document
+  creation, Markdown-to-Docs structure, duplicate prevention, changed-response
+  handling, remote duplicate detection after a missing local receipt, and
+  preservation after Drive failure. No live Google account, Gemini request, or
+  user video is used.
+- The complete suite, including all seven desktop checks, passed: 138 tests in
+  16.024 seconds.
+
 ## Prominent resume preview — 2026-09-13
 
 - Version 0.11.1 shows **Resume available** in the main preview banner and marks the

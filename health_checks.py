@@ -6,6 +6,7 @@ import shutil
 import sys
 
 import gemini_analysis
+import drive_delivery
 
 
 @dataclass(frozen=True)
@@ -43,6 +44,8 @@ def checks(which=shutil.which, importer=importlib.import_module):
     else:
         detail = 'Client installed; API key is not saved'
     result.append(Check('Gemini', sdk and key, detail, optional=True))
+    drive_ready, drive_detail = drive_delivery.readiness()
+    result.append(Check('Google Drive', drive_ready, drive_detail, optional=True))
     return result
 
 

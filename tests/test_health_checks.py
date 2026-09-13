@@ -28,7 +28,7 @@ class HealthCheckTests(unittest.TestCase):
         text = videotool_gui.about_text(checks)
         self.assertIn(f'Installed/app version: {__version__}', text)
         self.assertIn('Gemini: Ready', text)
-        self.assertIn('never display your API key', text)
+        self.assertIn('never display your API key or Google credentials', text)
 
 
 if __name__ == '__main__':

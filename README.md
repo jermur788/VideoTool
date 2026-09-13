@@ -5,8 +5,7 @@ DaVinci editing intermediates with FFmpeg, with an optional desktop window.
 Source files are retained.
 
 The desktop window can optionally upload prepared MP4 files to Gemini with an
-editable prompt. Google Drive delivery is the next planned stage in
-[NEXT_VERSION.md](NEXT_VERSION.md).
+editable prompt and save the completed local response as a native Google Doc.
 
 ## Install the desktop app
 
@@ -360,6 +359,44 @@ writable. A project shown as **Restricted** in Google AI Studio must be resolved
 replaced with an eligible active project before VideoTool can call Gemini.
 The intended first manual benchmark is the V2 yoga finished video, followed later
 by A01 Kinsale Bay. Neither source is used by automated tests or implementation checks.
+
+### Save Gemini results to Google Drive
+
+VideoTool can save a successful local Gemini response as a native Google Doc in
+**My Drive / VideoTool Gemini Results**. Enable **Save final response to Google
+Drive** before Preview. The exact local Markdown result is always saved first.
+If Drive is unavailable, the Gemini result remains successful and **Retry Google
+Drive** retries only the existing local response. **Google Drive… → Save an
+existing local response** provides the same recovery after restarting the app.
+
+Google requires a one-time desktop-app connection:
+
+1. In Google Cloud, enable the Google Drive API and Google Docs API for a project.
+2. Configure the Google Auth consent screen and add the Google account that will
+   use VideoTool as a test user when the app is in testing mode.
+3. Create an OAuth client with application type **Desktop app** and download its
+   JSON file.
+4. In VideoTool, open **Google Drive… → Choose setup file and connect**, select
+   that JSON file, and approve access in the browser.
+
+VideoTool privately copies the desktop OAuth setup and refreshable user token to
+the normal per-user configuration folder with owner-only permissions. Updates do
+not replace them. The app requests the narrow `drive.file` permission, which lets
+it create and manage the result folder and documents it creates without browsing
+unrelated Drive files. **Open Google Doc** opens the completed result. A local
+`.drive.md` receipt beside the Gemini Markdown records the Doc link and ID; a
+private machine-readable sidecar prevents duplicate delivery retries.
+
+If the optional Drive libraries are missing, update the managed app with online
+support from the VideoTool source folder:
+
+```bash
+python3 install-videotool.py --update --with-gemini
+```
+
+Official setup references: [Drive Python quickstart](https://developers.google.com/workspace/drive/api/quickstart/python),
+[Drive folders](https://developers.google.com/workspace/drive/api/guides/folder), and
+[Google Docs creation](https://developers.google.com/workspace/docs/api/concepts/document).
 
 ### AI Studio size target
 

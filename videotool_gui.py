@@ -742,6 +742,15 @@ def main():
         print(f'Could not open a desktop window: {exc}')
         return 1
     root.title(f'VideoTool {__version__} — Prepare videos')
+    app_icon = None
+    header_icon = None
+    try:
+        app_icon = tk.PhotoImage(file=str(Path(__file__).resolve().with_name('videotool_icon.png')))
+        header_icon = app_icon.subsample(4, 4)
+        root.iconphoto(True, app_icon)
+        root.videotool_images = (app_icon, header_icon)
+    except (OSError, tk.TclError):
+        pass
     screen_width = root.winfo_screenwidth()
     screen_height = root.winfo_screenheight()
     window_width = max(760, min(1280, screen_width - 80))
@@ -795,10 +804,18 @@ def main():
     body = ttk.Frame(page_canvas, padding=(18, 14))
     body_window = page_canvas.create_window((0, 0), window=body, anchor='nw')
     body.columnconfigure(0, weight=1)
-    ttk.Label(body, text='Prepare your videos', style='Title.TLabel').grid(sticky='w')
+    header = ttk.Frame(body)
+    header.grid(row=0, sticky='ew', pady=(0, 14))
+    header.columnconfigure(1, weight=1)
+    if header_icon is not None:
+        logo = ttk.Label(header, image=header_icon)
+        logo.grid(row=0, column=0, rowspan=2, sticky='w', padx=(0, 14))
+        logo.videotool_logo = True
+    ttk.Label(header, text='Prepare your videos', style='Title.TLabel').grid(
+        row=0, column=1, sticky='sw')
     subtitle = tk.StringVar(value='Choose a format and footage, review the files, then convert.')
-    ttk.Label(body, textvariable=subtitle, style='Subtitle.TLabel').grid(
-        row=1, sticky='w', pady=(3, 14))
+    ttk.Label(header, textvariable=subtitle, style='Subtitle.TLabel').grid(
+        row=1, column=1, sticky='nw', pady=(3, 0))
     source = tk.StringVar(value='Choose a video or a folder to begin')
     destination = tk.StringVar(value='Save beside the original files')
     reference_text = tk.StringVar(value='Automatic: preserve 8-bit or 10-bit')

@@ -74,7 +74,8 @@ disabled. Hints disappear when you move away, click, press Escape, or change foc
 The page scrolls when the window is shorter than its contents. Narrow windows stack
 the format, source, and Gemini sections instead of clipping them, while the status
 and primary Preview/Run actions remain visible at the bottom. Gemini's main and
-creator prompts use tabs when both are needed.
+creator prompts use tabs when both are needed. The same VideoTool film-and-arrow
+mark identifies the application menu, window title bar, and page header.
 
 On Linux Mint/Ubuntu, install the window library once:
 

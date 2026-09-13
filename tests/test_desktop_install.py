@@ -30,6 +30,7 @@ class DesktopInstallTests(unittest.TestCase):
         self.assertTrue(installed['launcher'].stat().st_mode & 0o111)
         self.assertTrue(installed['desktop'].is_file())
         self.assertTrue(installed['icon'].is_file())
+        self.assertTrue((installed['app'] / 'videotool_icon.png').is_file())
         desktop = installed['desktop'].read_text(encoding='utf-8')
         self.assertIn('Name=VideoTool', desktop)
         self.assertIn(f'Exec="{installed["launcher"]}"', desktop)
@@ -38,6 +39,7 @@ class DesktopInstallTests(unittest.TestCase):
         manifest = json.loads((installed['app'] / desktop_install.MANIFEST).read_text())
         self.assertEqual(manifest['application'], 'VideoTool')
         self.assertIn('creator_benchmark.py', manifest['app_files'])
+        self.assertIn('videotool_icon.png', manifest['app_files'])
         self.assertTrue((installed['app'] / 'creator_benchmark.py').is_file())
         imported = subprocess.run(
             [sys.executable, '-B', '-c',

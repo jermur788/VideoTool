@@ -1,5 +1,12 @@
 Test results — VideoTool
 
+## VideoTool window logo — 2026-09-13
+
+- Version 0.12.3 uses the existing VideoTool film-and-arrow mark in the application
+  menu, native window icon, and visible page header.
+- The installer preserves the scalable SVG for the desktop and installs a verified
+  transparent 256 × 256 PNG for the Tk window and header.
+
 ## Responsive scrollable window — 2026-09-13
 
 - Version 0.12.2 gives the complete page a persistent vertical scrollbar and

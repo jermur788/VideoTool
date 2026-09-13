@@ -40,6 +40,8 @@ class DesktopWorkflowTest(unittest.TestCase):
                                           getattr(w, 'videotool_page_scrollbar', False))
                     panels = {str(w.cget('text')): w for w in widgets
                               if isinstance(w, ttk.LabelFrame)}
+                    logo = next(w for w in widgets if getattr(w, 'videotool_logo', False))
+                    self.assertNotEqual(str(logo.cget('image')), '')
                     self.assertTrue(page_scrollbar.winfo_ismapped())
                     first, last = page_scrollbar.get()
                     self.assertLess(last, 1.0)

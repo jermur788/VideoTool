@@ -18,7 +18,7 @@ APP_FILES = (
     'gemini_analysis.py', 'drive_delivery.py', 'health_checks.py',
     'processing_receipts.py', 'tooltips.py', 'upload_presets.py',
     'user_settings.py', 'videotool.py', 'videotool_gui.py',
-    'videotool_version.py', 'requirements-gemini.txt', 'README.md',
+    'videotool_version.py', 'videotool_icon.png', 'requirements-gemini.txt', 'README.md',
     'NEXT_VERSION.md', 'install-videotool.py', 'desktop_install.py',
 )
 MANIFEST = '.videotool-install.json'

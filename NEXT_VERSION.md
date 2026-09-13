@@ -93,6 +93,9 @@ Version 0.12.2 makes the complete desktop page responsive: narrow windows stack
 setup sections, the page remains vertically scrollable, and primary actions stay
 visible in a fixed footer.
 
+Version 0.12.3 applies the existing VideoTool film-and-arrow identity consistently
+to the application menu, window icon, and page header.
+
 Desktop packaging is also implemented at version 0.7.0: a user-level installer
 adds an application-menu launcher and scalable icon, the About panel reports the
 version and local readiness, updates replace only a recognized managed install,

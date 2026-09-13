@@ -69,7 +69,8 @@ class CreatorBenchmarkTests(unittest.TestCase):
         generated = [call for call in calls if call[0] == 'generate']
         self.assertIs(generated[0][1], self.remote)
         self.assertIs(generated[1][1], self.remote)
-        self.assertEqual([call[3] for call in generated], ['Baseline analysis', 'Creator review'])
+        self.assertEqual([call[3] for call in generated],
+                         ['Standard summary (baseline)', 'Creator review'])
         self.assertEqual(result.requests_completed, 2)
         self.assertFalse(result.error)
         for path in (result.baseline_path, result.creator_path, result.report_path):
@@ -170,7 +171,7 @@ class CreatorBenchmarkTests(unittest.TestCase):
         report = result.report_path.read_text(encoding='utf-8')
         self.assertIn('Incomplete', report)
         self.assertIn('second request failed', report)
-        self.assertIn('Baseline response:', report)
+        self.assertIn('Standard-summary baseline response:', report)
 
     def test_benchmark_error_redacts_configured_secret(self):
         secret = 'benchmark-secret-value'

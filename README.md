@@ -33,8 +33,8 @@ python3 install-videotool.py --with-gemini
 
 That optional flag creates an isolated environment inside the managed VideoTool
 installation and downloads the packages listed in `requirements-gemini.txt`. The
-API key is still entered later through **Gemini key…** and remains in the operating
-system password store. A package-download failure leaves the local conversion app
+API key is still entered later through **Gemini key…** and remains in private
+per-user credential storage. A package-download failure leaves the local conversion app
 installed and allows a later retry.
 
 The application menu provides **Help → About VideoTool**, which shows the installed
@@ -63,15 +63,18 @@ environment with:
 videotool-uninstall
 ```
 
-Your VideoTool preferences and securely saved Gemini key are preserved. To also
+Your VideoTool preferences and privately saved Gemini key are preserved. To also
 remove the non-secret preferences, use `videotool-uninstall --remove-settings`.
-The key remains in the system password store; remove it through **Gemini key…**
+The key remains in credential storage; remove it through **Gemini key…**
 before uninstalling if you do not want to retain it.
 
 ## Desktop window
 
 Hover over any button for a short explanation, including buttons that are currently
 disabled. Hints disappear when you move away, click, press Escape, or change focus.
+The format, source, and Gemini settings share one compact row so the review,
+progress, and result controls remain visible without scrolling the whole window.
+Gemini's main and creator prompts use tabs when both are needed.
 
 On Linux Mint/Ubuntu, install the window library once:
 
@@ -226,8 +229,10 @@ python3 -m venv .venv
 
 Create a Gemini API key in Google AI Studio. In VideoTool, choose **AI Studio
 upload**, open **Gemini key…**, and select **Save or replace key**. Paste the key
-once; VideoTool saves it in the operating system's password store. The same menu
-can replace or remove it later.
+once; VideoTool saves it in an owner-only credential file under your normal
+per-user configuration folder and also uses the operating system password store
+when available. Application updates do not replace this credential. The same menu
+can replace or remove both saved copies later.
 
 As an optional temporary alternative, set the key in a terminal before opening
 VideoTool:
@@ -253,8 +258,10 @@ original remains unchanged, and the Markdown response is saved beside it. Direct
 upload accepts the video formats currently listed by Gemini, including MP4, MOV,
 MPEG, AVI, FLV, WebM, WMV, and 3GPP.
 
-For a finished DaVinci export, enable **Compare baseline with creator review
-(finished video)**. Preview shows the exact local video, Gemini model, both editable
+For a finished DaVinci export, enable **Compare standard summary with creator
+review**. The **standard summary (baseline)** is VideoTool's normal chronological
+summary of the same video using the same Gemini model. It provides the reference
+for judging what the creator-focused prompt adds. Preview shows the exact local video, Gemini model, both editable
 prompts, one planned upload, two planned model requests, and the local report
 destination. Preview is local: no Gemini client or network request starts until
 you press **Run creator benchmark**. The source is uploaded once and reused first
@@ -276,7 +283,7 @@ Both prompts remain editable. VideoTool keeps a separate creator-prompt draft fo
 each purpose when you switch between them. **Restore purpose prompt** resets only
 the currently selected purpose. No conversion runs and the source stays in place.
 
-The benchmark saves separate baseline and creator-review Markdown responses plus
+The benchmark saves separate standard-summary baseline and creator-review Markdown responses plus
 a comparison report beside the source. Names are collision-safe, completed results
 survive a later failure, and the report includes measured timings, upload size,
 request counts, the selected purpose, both exact prompts, and a focused blank human
@@ -285,12 +292,61 @@ completeness, pose/content recognition, chapter usefulness, publishing copy,
 thumbnail candidates, Shorts, hallucinations, creator corrections, hands-on time,
 processing time, upload friction, and repeatability where relevant. Subjective
 scores remain blank; only measured values are filled automatically. The comparison
-tests prompts and workflow; it does not add scene extraction, frame extraction,
-contact sheets, local transcription, heavy AI dependencies, or raw-footage
-cataloguing. **Cancel Gemini benchmark** prevents the next online stage.
+tests prompts and workflow. **Cancel Gemini benchmark** prevents the next online stage.
 A Gemini SDK request already in progress must return before cancellation takes
 effect. Uploaded Gemini files are currently left to Gemini's service retention;
 VideoTool does not issue remote cleanup requests.
+
+For a fuller answer that uses both representations, enable **Combine native video
+with selected frames**. Choose one finished video and edit the normal Gemini
+prompt. Preview shows the exact video, model, prompt, planned local frame
+selection, three Gemini requests, and saved artifacts before anything starts.
+**Run combined analysis** then:
+
+1. uses FFmpeg locally to select scene changes and regular intervals, capped at
+   48 frames, and stamps each image with its video timestamp;
+2. creates a contact sheet beside the source;
+3. sends the native video to Gemini with the reviewed prompt; and
+4. sends the selected stills to the same Gemini model with that exact prompt; and
+5. asks the same model to reconcile both preliminary results into one final answer
+   that follows the original prompt.
+
+VideoTool saves both preliminary Markdown responses, the combined final response,
+and a comparison report beside the source. The report contains measured timings,
+selected timestamps, preserved artifact names, and a blank rating table for
+comparing all three results. The selected-frame input has timestamps but cannot
+hear audio or see continuous motion, while the native-video input retains both.
+The final request uses the native result for sound and movement and the frame result
+for visible text, visual detail, and explicit frame timestamps. Gemini performs all
+three stages; this mode does not run a local AI model. The original video is read
+and verified after the run; it is never converted or modified. Temporary individual
+frames are removed afterward, while the contact sheet and reports are retained.
+The source folder must be writable.
+
+The final combination policy omits speculative locations, identities, causes, and
+intentions unless the user's prompt asks for possibilities. Unsupported candidates
+from a preliminary response are reduced to a plain uncertainty, such as saying that
+the location cannot be identified from the video. Timestamps derived from sampled
+frames are described as approximate visibility windows. The exact policy is included
+in the combined response file and comparison report.
+
+If Gemini reports a temporary 503 service-unavailable or high-demand condition
+during any analysis request, VideoTool automatically retries that request after 2,
+5, and 10 seconds. It does not repeat the completed upload or earlier analysis
+stages while the run remains open. A non-temporary error still stops immediately,
+and exhausting all retries preserves every result already completed.
+
+After an incomplete combined run, selecting the same video with the same model and
+unchanged prompt automatically offers a resumable plan in Preview. Running it reuses
+the saved native-video response and does not upload the video or repeat that Gemini
+request. VideoTool locally rebuilds temporary frames, continues with the first
+unfinished Gemini stage, and also reuses a completed selected-frame response when
+available. The original incomplete report remains unchanged; the resumed attempt
+saves a separate recovery report. Changing the video, model, prompt, or source file
+size starts a new analysis instead.
+The preview displays a prominent **Resume available** banner and changes the status
+to **ready to resume from saved results**, so recovery is visible without scrolling
+through the selected-file details.
 
 The current default model is `gemini-3.8-flash`. Set `VIDEOTOOL_GEMINI_MODEL`
 before starting the app to use another model. Every non-empty response is saved

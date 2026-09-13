@@ -8,12 +8,15 @@ from dataclasses import dataclass
 from datetime import datetime
 import os
 from pathlib import Path
+import stat
+import tempfile
 import time
 
 
 DEFAULT_MODEL = os.environ.get('VIDEOTOOL_GEMINI_MODEL', 'gemini-3.8-flash')
 KEYRING_SERVICE = 'VideoTool Gemini'
 KEYRING_ACCOUNT = 'api-key'
+CREDENTIAL_FILENAME = 'gemini-api-key'
 SUPPORTED_VIDEO_SUFFIXES = frozenset({
     '.mp4', '.mpeg', '.mpg', '.mov', '.avi', '.flv', '.webm', '.wmv', '.3gp', '.3gpp',
 })
@@ -56,12 +59,69 @@ class UploadedVideo:
     processing_seconds: float
 
 
+def credential_path(environ=None, home=None):
+    """Return the per-user credential path outside the managed application."""
+    environ = os.environ if environ is None else environ
+    base = environ.get('XDG_CONFIG_HOME')
+    if base:
+        return Path(base).expanduser() / 'videotool' / CREDENTIAL_FILENAME
+    home = Path.home() if home is None else Path(home)
+    return home / '.config' / 'videotool' / CREDENTIAL_FILENAME
+
+
+def _file_api_key(path=None):
+    target = Path(path or credential_path())
+    try:
+        info = target.lstat()
+        if target.is_symlink() or not stat.S_ISREG(info.st_mode) or info.st_mode & 0o077:
+            return None
+        value = target.read_text(encoding='utf-8').strip()
+    except OSError:
+        return None
+    return value or None
+
+
+def _save_file_api_key(value, path=None):
+    target = Path(path or credential_path())
+    temporary_path = None
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        if target.parent.is_symlink() or (target.exists() and target.is_symlink()):
+            raise OSError('the private credential location is a symbolic link')
+        target.parent.chmod(0o700)
+        with tempfile.NamedTemporaryFile('w', encoding='utf-8', dir=target.parent,
+                                         prefix='.gemini-key-', delete=False) as temporary:
+            temporary.write(value)
+            temporary.flush()
+            os.fsync(temporary.fileno())
+            temporary_path = Path(temporary.name)
+        temporary_path.chmod(0o600)
+        os.replace(temporary_path, target)
+        target.chmod(0o600)
+    except OSError as exc:
+        if temporary_path:
+            try:
+                temporary_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+        raise GeminiError(f'VideoTool could not save its private Gemini credential: {exc}') from exc
+
+
 def _stored_api_key():
+    saved = _file_api_key()
+    if saved:
+        return saved
     try:
         import keyring
-        return keyring.get_password(KEYRING_SERVICE, KEYRING_ACCOUNT)
+        saved = keyring.get_password(KEYRING_SERVICE, KEYRING_ACCOUNT)
     except Exception:
         return None
+    if saved:
+        try:
+            _save_file_api_key(saved)
+        except GeminiError:
+            pass
+    return saved
 
 
 def api_key(environ=None):
@@ -87,26 +147,31 @@ def save_api_key(value):
         raise GeminiError('Paste the Gemini API key without quotation marks.')
     if '\\' in value or any(character.isspace() for character in value):
         raise GeminiError('Paste the Gemini API key exactly as shown in Google AI Studio, without spaces or backslashes.')
+    _save_file_api_key(value)
     try:
         import keyring
         keyring.set_password(KEYRING_SERVICE, KEYRING_ACCOUNT, value)
-        if keyring.get_password(KEYRING_SERVICE, KEYRING_ACCOUNT) != value:
-            raise GeminiError('The password store did not return the saved Gemini key.')
-    except GeminiError:
-        raise
-    except Exception as exc:
-        raise GeminiError(f'The system password store could not save the Gemini key: {exc}') from exc
+    except Exception:
+        pass
 
 
 def delete_api_key():
+    target = credential_path()
+    removed = False
     try:
         import keyring
-        if keyring.get_password(KEYRING_SERVICE, KEYRING_ACCOUNT) is None:
-            return False
-        keyring.delete_password(KEYRING_SERVICE, KEYRING_ACCOUNT)
-        return True
-    except Exception as exc:
-        raise GeminiError(f'The system password store could not remove the Gemini key: {exc}') from exc
+        if keyring.get_password(KEYRING_SERVICE, KEYRING_ACCOUNT) is not None:
+            keyring.delete_password(KEYRING_SERVICE, KEYRING_ACCOUNT)
+            removed = True
+    except Exception:
+        pass
+    try:
+        if target.exists() or target.is_symlink():
+            target.unlink()
+            removed = True
+    except OSError as exc:
+        raise GeminiError(f'VideoTool could not remove its private Gemini credential: {exc}') from exc
+    return removed
 
 
 def sdk_present():
@@ -173,7 +238,36 @@ def _friendly_api_error(exc):
                 'resolve any “API access is restricted” notice for the key’s project, including '
                 'billing if Google requests it, or create a key in an active project. Then save '
                 'that key through Gemini key… → Save or replace key.')
+    if ('503' in upper or 'UNAVAILABLE' in upper or 'HIGH DEMAND' in upper or
+            'TEMPORARILY UNAVAILABLE' in upper):
+        return ('Gemini remained temporarily busy after automatic retries. Your completed '
+                'local results were preserved; try the analysis again later.')
     return message
+
+
+def _is_transient_api_error(exc):
+    message = _safe_error(exc).upper()
+    return ('503' in message or 'UNAVAILABLE' in message or
+            'HIGH DEMAND' in message or 'TEMPORARILY UNAVAILABLE' in message)
+
+
+def generate_content_with_retry(client, model, contents, cancel=None, report=None,
+                                label='Analyzing', retry_delays=(2, 5, 10)):
+    """Generate once, retrying only temporary service-unavailable responses."""
+    report = report or (lambda stage, message: None)
+    delays = tuple(retry_delays)
+    for attempt in range(len(delays) + 1):
+        _check_cancel(cancel)
+        try:
+            return client.models.generate_content(model=model, contents=contents)
+        except Exception as exc:
+            if attempt >= len(delays) or not _is_transient_api_error(exc):
+                raise
+            delay = delays[attempt]
+            report(label, f'Gemini is temporarily busy. Retrying in {delay} seconds '
+                          f'({attempt + 1} of {len(delays)})…')
+            _wait(cancel, delay)
+    raise AssertionError('Unreachable retry state')
 
 
 def _wait(cancel, seconds):
@@ -260,7 +354,8 @@ def generate_for_file(remote, video_name, prompt, model=DEFAULT_MODEL, cancel=No
     report(label, f'Gemini is analyzing {video_name} with the reviewed prompt…')
     started = time.monotonic()
     try:
-        response = client.models.generate_content(model=model, contents=[remote, prompt])
+        response = generate_content_with_retry(
+            client, model, [remote, prompt], cancel, report, label)
         text = str(getattr(response, 'text', '') or '').strip()
     except Exception as exc:
         raise GeminiError(f'Gemini could not analyze {video_name}: {_friendly_api_error(exc)}') from exc

@@ -10,6 +10,13 @@ import time
 import gemini_analysis
 
 
+BASELINE_DEFINITION = (
+    "The standard summary (baseline) is VideoTool's normal chronological-summary "
+    "response from the same video and Gemini model. It is the reference used to "
+    "judge what the creator-review prompt adds."
+)
+
+
 DEFAULT_PURPOSE = 'Publishing package'
 PURPOSES = {
     'Publishing package': {
@@ -141,11 +148,12 @@ def preview_text(video, model, baseline_prompt, creator_prompt, purpose=DEFAULT_
     return (f'Creator benchmark · Purpose: {purpose} · Model: {model}\n'
             f'Upload: {video} once · Model requests: 2\n'
             f'Reports: beside {video}\n'
+            f'{BASELINE_DEFINITION}\n'
             'Network/API usage starts only after Run creator benchmark.\n'
             'This comparison tests the creator-review workflow and prompts; it does not '
             'test scene/frame extraction, contact sheets, local transcription, heavy AI '
             'dependencies, or raw-footage cataloguing.\n'
-            f'Baseline prompt:\n{baseline_prompt}\n\n'
+            f'Standard-summary baseline prompt:\n{baseline_prompt}\n\n'
             f'Creator-review prompt:\n{creator_prompt}')
 
 
@@ -231,7 +239,7 @@ def _report_text(video, source_size, model, baseline_prompt, creator_prompt, pur
 - Model requests: {requests_completed} completed; 2 planned
 - Upload time: {measured(timings.get('upload'))}
 - Gemini processing time: {measured(timings.get('processing'))}
-- Baseline response time: {measured(timings.get('baseline'))}
+- Standard-summary baseline response time: {measured(timings.get('baseline'))}
 - Creator-review response time: {measured(timings.get('creator'))}
 - Total local workflow time: {elapsed:.2f} seconds
 - Error: {error or 'None'}
@@ -240,9 +248,13 @@ This first comparison primarily tests the creator-review workflow and prompt. It
 does not test scene/frame extraction, contact sheets, local transcription, heavy
 AI dependencies, or raw-footage cataloguing.
 
+## What “baseline” means
+
+{BASELINE_DEFINITION}
+
 ## Preserved results
 
-- Baseline response: {f'`{baseline_path.name}`' if baseline_path.exists() else 'Not saved'}
+- Standard-summary baseline response: {f'`{baseline_path.name}`' if baseline_path.exists() else 'Not saved'}
 - Creator-review response: {f'`{creator_path.name}`' if creator_path.exists() else 'Not saved'}
 
 ## Purpose focus
@@ -253,7 +265,7 @@ AI dependencies, or raw-footage cataloguing.
 
 Fill these in after reading both responses. Leave a score blank when it cannot be judged.
 
-| Criterion | Baseline (1–5) | Creator review (1–5) | Notes |
+| Criterion | Standard summary baseline (1–5) | Creator review (1–5) | Notes |
 |---|---:|---:|---|
 {rubric}
 
@@ -268,7 +280,7 @@ Fill these in after reading both responses. Leave a score blank when it cannot b
 | Upload friction | Not measured automatically |  |
 | Repeatability | Requires another approved run |  |
 
-## Baseline prompt
+## Standard summary (baseline) prompt
 
 {baseline_prompt}
 
@@ -321,9 +333,10 @@ def run(video, baseline_prompt, creator_prompt, model=gemini_analysis.DEFAULT_MO
         gemini_analysis._check_cancel(cancel)
         text, timings['baseline'] = generator(
             uploaded.remote, video.name, baseline_prompt, model, cancel, report, client,
-            label='Baseline analysis')
+            label='Standard summary (baseline)')
         completed = 1
-        _write_raw(paths[0], 'Baseline Gemini response', video, model, baseline_prompt, text)
+        _write_raw(paths[0], 'Standard summary (baseline) Gemini response',
+                   video, model, baseline_prompt, text)
         baseline_saved = True
         gemini_analysis._check_cancel(cancel)
         text, timings['creator'] = generator(

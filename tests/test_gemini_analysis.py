@@ -45,11 +45,40 @@ class GeminiAnalysisTests(unittest.TestCase):
             get_password=lambda service, account: values.get((service, account)),
             delete_password=lambda service, account: values.pop((service, account)),
         )
-        with patch.dict(sys.modules, {'keyring': fake}):
-            gemini_analysis.save_api_key(' saved-secret ')
-            self.assertEqual(gemini_analysis.api_key(), 'saved-secret')
-            self.assertTrue(gemini_analysis.delete_api_key())
-            self.assertIsNone(gemini_analysis.api_key())
+        with tempfile.TemporaryDirectory() as directory:
+            credential = Path(directory) / 'videotool' / 'gemini-api-key'
+            with patch.dict(sys.modules, {'keyring': fake}), \
+                    patch.object(gemini_analysis, 'credential_path', return_value=credential):
+                gemini_analysis.save_api_key(' saved-secret ')
+                self.assertEqual(gemini_analysis.api_key(), 'saved-secret')
+                self.assertEqual(credential.stat().st_mode & 0o777, 0o600)
+                self.assertTrue(gemini_analysis.delete_api_key())
+                self.assertIsNone(gemini_analysis.api_key())
+
+    def test_private_credential_persists_when_password_store_is_unavailable(self):
+        unavailable = SimpleNamespace(
+            set_password=lambda *args: (_ for _ in ()).throw(RuntimeError('unavailable')),
+            get_password=lambda *args: (_ for _ in ()).throw(RuntimeError('unavailable')),
+            delete_password=lambda *args: (_ for _ in ()).throw(RuntimeError('unavailable')),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            credential = Path(directory) / 'videotool' / 'gemini-api-key'
+            with patch.dict(sys.modules, {'keyring': unavailable}), \
+                    patch.object(gemini_analysis, 'credential_path', return_value=credential):
+                gemini_analysis.save_api_key('durable-secret')
+                self.assertEqual(gemini_analysis.api_key(), 'durable-secret')
+                self.assertTrue(gemini_analysis.delete_api_key())
+                self.assertFalse(credential.exists())
+
+    def test_existing_password_store_key_is_migrated_to_private_credential(self):
+        fake = SimpleNamespace(get_password=lambda *args: 'existing-secret')
+        with tempfile.TemporaryDirectory() as directory:
+            credential = Path(directory) / 'videotool' / 'gemini-api-key'
+            with patch.dict(sys.modules, {'keyring': fake}), \
+                    patch.object(gemini_analysis, 'credential_path', return_value=credential):
+                self.assertEqual(gemini_analysis.api_key(), 'existing-secret')
+                self.assertEqual(credential.read_text(encoding='utf-8'), 'existing-secret')
+                self.assertEqual(credential.stat().st_mode & 0o777, 0o600)
 
     def test_saved_key_rejects_shell_quotes_and_backslashes(self):
         with self.assertRaisesRegex(gemini_analysis.GeminiError, 'without quotation marks'):
@@ -96,6 +125,42 @@ class GeminiAnalysisTests(unittest.TestCase):
         self.assertIn('billing', message)
         self.assertIn('active project', message)
         self.assertNotIn('ACCESS_TOKEN_TYPE_UNSUPPORTED', message)
+
+    def test_temporary_high_demand_is_retried_before_succeeding(self):
+        calls = []
+        reports = []
+        def generate(**kwargs):
+            calls.append(kwargs)
+            if len(calls) < 3:
+                raise RuntimeError('503 UNAVAILABLE: model is currently experiencing high demand')
+            return SimpleNamespace(text='recovered')
+        client = SimpleNamespace(models=SimpleNamespace(generate_content=generate))
+        with patch.object(gemini_analysis, '_wait') as wait:
+            response = gemini_analysis.generate_content_with_retry(
+                client, 'model', ['content'], report=lambda *args: reports.append(args),
+                retry_delays=(2, 5, 10))
+        self.assertEqual(response.text, 'recovered')
+        self.assertEqual(len(calls), 3)
+        self.assertEqual([call.args[1] for call in wait.call_args_list], [2, 5])
+        self.assertTrue(all('temporarily busy' in message for _stage, message in reports))
+
+    def test_non_transient_generation_error_is_not_retried(self):
+        calls = []
+        def generate(**kwargs):
+            calls.append(kwargs)
+            raise RuntimeError('400 INVALID_ARGUMENT')
+        client = SimpleNamespace(models=SimpleNamespace(generate_content=generate))
+        with self.assertRaisesRegex(RuntimeError, 'INVALID_ARGUMENT'):
+            gemini_analysis.generate_content_with_retry(
+                client, 'model', ['content'], retry_delays=(0, 0, 0))
+        self.assertEqual(len(calls), 1)
+
+    def test_high_demand_error_has_plain_retry_exhausted_message(self):
+        message = gemini_analysis._friendly_api_error(
+            RuntimeError('503 UNAVAILABLE: high demand'))
+        self.assertIn('after automatic retries', message)
+        self.assertIn('local results were preserved', message)
+        self.assertNotIn('503', message)
 
     def test_upload_wait_and_analyze(self):
         with tempfile.TemporaryDirectory() as directory:

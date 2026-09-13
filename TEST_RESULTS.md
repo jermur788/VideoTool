@@ -1,5 +1,115 @@
 Test results — VideoTool
 
+## Prominent resume preview — 2026-09-13
+
+- Version 0.11.1 shows **Resume available** in the main preview banner and marks the
+  file ready to resume from saved results.
+- A graphical desktop test creates a safe mocked partial run, previews the matching
+  generated video, and verifies that the banner, status, and enabled combined action
+  are visible in the compact window.
+- The complete suite, including all seven desktop checks, passed: 132 tests in
+  15.026 seconds.
+- No live Gemini request or user video is used by the check.
+
+## Resumable combined analysis — 2026-09-13
+
+- Version 0.11.0 detects a compatible incomplete combined-analysis report during
+  Preview when the video, model, prompt, and source size still match.
+- Recovery tests verify that a failed selected-frame stage reuses the native result
+  without uploading or repeating native analysis, while a failed final stage also
+  reuses the completed frame response. Temporary frames are rebuilt locally.
+- Successful recovery saves the missing artifacts and a separate recovery report;
+  the original incomplete report and source video remain unchanged.
+- The interface distinguishes **View combined response** from **View recovery
+  report** when recovery is still incomplete.
+- The complete suite, including all six desktop checks, passed: 131 tests in
+  14.375 seconds.
+- No live Gemini request or user video is used by these checks.
+
+## Combined-response evidence policy — 2026-09-13
+
+- Version 0.10.2 tells the final reconciliation stage to omit unsupported locations,
+  identities, causes, and intentions; preserve only supported details; and state
+  unresolved conflicts as uncertainties.
+- Sampled-frame timestamps are explicitly treated as approximate visibility windows.
+  Tests verify that the policy reaches Gemini and is preserved in both final and
+  comparison artifacts.
+- The complete suite, including all six desktop checks, passed: 129 tests in
+  14.134 seconds.
+- No live Gemini request or user video is used by these checks.
+
+## Temporary Gemini high-demand recovery — 2026-09-12
+
+- Version 0.10.1 recognizes Gemini 503, unavailable, and high-demand generation
+  failures and retries the affected request after bounded delays.
+- Tests verify recovery after two temporary failures, no retry for permanent
+  invalid-request errors, and a short plain-language message after retries are
+  exhausted. The API key and raw Google error payload remain hidden.
+- The complete suite, including all six desktop checks, passed: 129 tests in
+  14.638 seconds.
+- No live Gemini request is made by these checks.
+
+## Combined native-video and selected-frame analysis — 2026-09-12
+
+- Version 0.10.0 adds a third, separately cancellable Gemini request that combines
+  the preserved native-video and selected-frame findings into the final response.
+- The synthesis instruction treats preliminary output as evidence, follows the
+  user's original prompt, prefers native-video evidence for audio and motion, and
+  uses frames for visible text, visual detail, and explicit timestamps.
+- The final response has its own collision-safe Markdown file. If synthesis fails,
+  VideoTool retains both preliminary responses, the contact sheet, and the report.
+- The complete suite, including all six desktop checks, passed: 126 tests in
+  14.272 seconds.
+- No live Gemini request or user video is used by the automated checks.
+
+## Native-video versus selected-frame benchmark — 2026-09-12
+
+- Version 0.9.0 adds an explicit desktop mode that compares one native-video
+  Gemini response with one response from locally selected timestamped frames,
+  using the same model and exact reviewed prompt.
+- Tests cover preview without side effects, source preservation, collision-safe
+  artifacts, partial-result preservation, timestamp and image request contents,
+  cancellation, truthful interface wording, and real FFmpeg extraction plus
+  contact-sheet creation from generated temporary media.
+- Desktop checks verify that the new option is mutually exclusive with the other
+  Gemini modes and that its action remains reachable in the compact window.
+- The complete suite, including all six graphical desktop checks, passed: 123
+  tests in 14.163 seconds.
+- No live Gemini request or user video is used by the automated checks.
+
+## Benchmark baseline definition — 2026-09-12
+
+- The interface now calls the first result **Standard summary (baseline)** and
+  explains that it is VideoTool's normal chronological summary from the same video
+  and model, used as the reference for the creator-focused response.
+- The definition is included before a run in Preview and afterward in the saved
+  comparison report. Raw response titles, timings, prompt headings, and rating
+  columns use the same wording.
+
+## Persistent Gemini key and truthful start status — 2026-09-12
+
+- Saving a Gemini key now writes it atomically to an owner-only per-user
+  credential file outside the managed application and mirrors it to the system
+  password store when that service is available. Updating or uninstalling the
+  application preserves the credential; **Remove saved key** removes both copies.
+- Tests cover file permissions, round-trip persistence when the password-store
+  backend is unavailable, deletion, key redaction, and existing environment-key
+  compatibility. No real credential is read, displayed, or sent.
+- If readiness fails, the interface now says **Gemini did not start**, resets both
+  progress labels, and states that no upload began instead of leaving an older
+  analysis message visible.
+
+## Compact desktop results — 2026-09-12
+
+- Format, source, and Gemini settings now share one responsive row. The prompt
+  editors use tabs, the review table is shorter, and the details box remains
+  independently scrollable.
+- The review, progress, primary action, and result buttons stay in the main window
+  without requiring a whole-page scrollbar.
+- The non-live suite passes, and opt-in desktop checks verify the compact
+  1200 x 900 layout and confirm that Gemini and completion actions stay within the window.
+  No Gemini request or user media is used by these checks.
+
 ## Creator-review finished-video benchmark — 2026-09-11
 
 - The full 112-test non-live suite completed successfully. Five optional

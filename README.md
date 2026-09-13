@@ -386,6 +386,9 @@ it create and manage the result folder and documents it creates without browsing
 unrelated Drive files. **Open Google Doc** opens the completed result. A local
 `.drive.md` receipt beside the Gemini Markdown records the Doc link and ID; a
 private machine-readable sidecar prevents duplicate delivery retries.
+Google sign-in can be cancelled from VideoTool and times out after five minutes if
+the browser sign-in is abandoned or rejected. Closing VideoTool during sign-in
+also closes it immediately.
 
 If the optional Drive libraries are missing, update the managed app with online
 support from the VideoTool source folder:

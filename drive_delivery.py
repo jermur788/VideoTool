@@ -9,6 +9,8 @@ from pathlib import Path
 import stat
 import tempfile
 import time
+import webbrowser
+import wsgiref.simple_server
 
 
 SCOPES = ('https://www.googleapis.com/auth/drive.file',)
@@ -160,7 +162,53 @@ def readiness(environ=None, home=None):
     return True, 'Google Drive is connected.'
 
 
-def connect(cancel=None, report=None, client_file=None, token_file=None, flow_factory=None):
+def _run_local_authorization(flow, cancel=None, timeout_seconds=300, browser_opener=None):
+    """Complete desktop OAuth while remaining responsive to VideoTool cancellation."""
+    class RedirectApp:
+        last_request_uri = None
+        base_uri = ''
+
+        def __call__(self, environ, start_response):
+            query = environ.get('QUERY_STRING', '')
+            self.last_request_uri = (
+                self.base_uri.rstrip('/') + f"{environ.get('PATH_INFO', '/')}"
+                + (f'?{query}' if query else ''))
+            success = 'code=' in query
+            message = ('Google Drive is connected. You can close this tab and return to VideoTool.'
+                       if success else
+                       'Google sign-in did not complete. Return to VideoTool to try again.')
+            body = message.encode('utf-8')
+            start_response('200 OK', [('Content-Type', 'text/plain; charset=utf-8'),
+                                      ('Content-Length', str(len(body)))])
+            return [body]
+
+    app = RedirectApp()
+    server = wsgiref.simple_server.make_server('localhost', 0, app)
+    server.timeout = 0.2
+    try:
+        flow.redirect_uri = f'http://localhost:{server.server_port}/'
+        app.base_uri = flow.redirect_uri
+        authorization_url, _state = flow.authorization_url()
+        (browser_opener or (lambda url: webbrowser.open(url, new=1, autoraise=True)))(
+            authorization_url)
+        deadline = time.monotonic() + timeout_seconds
+        while app.last_request_uri is None:
+            _check_cancel(cancel)
+            if time.monotonic() >= deadline:
+                raise DriveError(
+                    'Google sign-in timed out. Use Google Drive… to connect again when ready.')
+            server.handle_request()
+        _check_cancel(cancel)
+        # OAuthlib requires HTTPS when validating the response, while Google permits
+        # an HTTP loopback redirect for installed desktop applications.
+        flow.fetch_token(authorization_response=app.last_request_uri.replace('http', 'https', 1))
+        return flow.credentials
+    finally:
+        server.server_close()
+
+
+def connect(cancel=None, report=None, client_file=None, token_file=None, flow_factory=None,
+            timeout_seconds=300, browser_opener=None):
     """Run Google's installed-desktop OAuth flow and privately save refreshable credentials."""
     client_file = Path(client_file or client_path())
     token_file = Path(token_file or token_path())
@@ -176,8 +224,9 @@ def connect(cancel=None, report=None, client_file=None, token_file=None, flow_fa
             from google_auth_oauthlib.flow import InstalledAppFlow
             flow_factory = InstalledAppFlow.from_client_secrets_file
         flow = flow_factory(str(client_file), SCOPES)
-        credentials = flow.run_local_server(port=0, open_browser=True,
-                                            authorization_prompt_message='')
+        credentials = _run_local_authorization(
+            flow, cancel=cancel, timeout_seconds=timeout_seconds,
+            browser_opener=browser_opener)
         _check_cancel(cancel)
         _atomic_private_text(token_file, credentials.to_json())
     except DriveCancelled:

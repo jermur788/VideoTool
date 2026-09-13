@@ -3,6 +3,7 @@ from pathlib import Path
 from types import SimpleNamespace
 import tempfile
 import threading
+import time
 import unittest
 from unittest.mock import patch
 
@@ -66,6 +67,81 @@ class DriveDeliveryTests(unittest.TestCase):
         bad.write_text(json.dumps({'web': {'client_id': 'id'}}))
         with self.assertRaisesRegex(drive_delivery.DriveError, 'Desktop app'):
             drive_delivery.save_client_config(bad, target)
+
+    def test_drive_connection_callback_saves_private_credentials(self):
+        client = self.folder / 'client.json'
+        client.write_text(json.dumps({'installed': {
+            'client_id': 'id', 'client_secret': 'secret',
+            'auth_uri': 'https://example/auth', 'token_uri': 'https://example/token'}}))
+        client.chmod(0o600)
+        token = self.folder / 'token.json'
+
+        class FakeCredentials:
+            def to_json(self):
+                return '{"refresh_token": "saved"}'
+
+        class FakeFlow:
+            credentials = FakeCredentials()
+            redirect_uri = ''
+            response = ''
+
+            def authorization_url(self):
+                return 'https://accounts.example/authorize', 'state-1'
+
+            def fetch_token(self, authorization_response, **_kwargs):
+                self.response = authorization_response
+
+        flow = FakeFlow()
+
+        class FakeServer:
+            server_port = 54321
+            timeout = None
+
+            def __init__(self, app):
+                self.app = app
+
+            def handle_request(self):
+                self.app({'HTTP_HOST': 'localhost:54321', 'PATH_INFO': '/',
+                          'QUERY_STRING': 'code=accepted&state=state-1'},
+                         lambda *_args: None)
+
+            def server_close(self):
+                pass
+
+        with patch('drive_delivery.wsgiref.simple_server.make_server',
+                   side_effect=lambda _host, _port, app: FakeServer(app)):
+            drive_delivery.connect(
+                client_file=client, token_file=token,
+                flow_factory=lambda *_args: flow, browser_opener=lambda _url: None,
+                timeout_seconds=2)
+        self.assertIn('code=accepted', flow.response)
+        self.assertEqual(token.stat().st_mode & 0o777, 0o600)
+        self.assertIn('refresh_token', token.read_text())
+
+    def test_drive_connection_can_be_cancelled_while_browser_is_open(self):
+        client = self.folder / 'client.json'
+        client.write_text(json.dumps({'installed': {
+            'client_id': 'id', 'client_secret': 'secret',
+            'auth_uri': 'https://example/auth', 'token_uri': 'https://example/token'}}))
+        client.chmod(0o600)
+        cancel = threading.Event()
+
+        class FakeFlow:
+            redirect_uri = ''
+
+            def authorization_url(self):
+                return 'https://accounts.example/authorize', 'state-1'
+
+        started = time.monotonic()
+        server = SimpleNamespace(server_port=54321, timeout=None,
+                                 handle_request=lambda: None, server_close=lambda: None)
+        with patch('drive_delivery.wsgiref.simple_server.make_server', return_value=server), \
+                self.assertRaises(drive_delivery.DriveCancelled):
+            drive_delivery.connect(
+                cancel=cancel, client_file=client, token_file=self.folder / 'token.json',
+                flow_factory=lambda *_args: FakeFlow(),
+                browser_opener=lambda _url: cancel.set(), timeout_seconds=10)
+        self.assertLess(time.monotonic() - started, 1)
 
     def test_delivery_creates_folder_native_doc_and_local_receipt_once(self):
         self.folder.chmod(0o755)

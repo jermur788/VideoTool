@@ -46,6 +46,7 @@ BUTTON_HINTS = {
     'Preview': 'Check your footage and show the proposed output names. No videos are converted.',
     'Stop after current file': 'Let the current video finish, then stop. You can retry the unfinished files later.',
     'Cancel current conversion': 'Terminate the active conversion and stop the batch. Any partial output is kept and will not be overwritten.',
+    'Cancel Google Drive connection': 'Stop waiting for Google sign-in and return VideoTool to its ready state.',
     'Convert ready files': 'Start converting the ready files shown in the preview. Completed files are kept.',
     'Preview retry': 'Prepare failed or unfinished files for review. Successful files are kept and partial files are not overwritten.',
     'Open output folder': 'Open the output folder in your file manager. If a row is selected, open that video’s output folder.',
@@ -816,7 +817,7 @@ def main():
     state = {'source': None, 'folder': False, 'destination': None, 'items': [], 'busy': False,
              'messages': {}, 'reference': None, 'receipt': None, 'run_summary': '',
              'receipt_error': '', 'gemini_response': None, 'drive_response': None,
-             'drive_pending': None}
+             'drive_pending': None, 'operation': None}
     events = queue.Queue()
     stop = threading.Event()
     cancel = threading.Event()
@@ -1293,16 +1294,26 @@ def main():
     gemini_key_menu.add_command(label='Remove saved key', command=remove_gemini_key)
 
     def begin_drive_connection(setup_file=None):
+        cancel.clear()
+        stop.clear()
+        state['operation'] = 'drive_connection'
         busy(True)
         progress_frame.grid()
         status.set('Opening Google sign-in for VideoTool…')
         file_progress_text.set('Current file: connecting Google Drive')
+        batch_progress_text.set('Google Drive: waiting for browser sign-in')
+        interrupt_label.configure(text='Google Drive connection')
+        stop_button.pack_forget()
+        cancel_button.configure(text='Cancel Google Drive connection', state='normal')
+        interrupt_actions.grid()
         def worker():
             try:
                 if setup_file:
                     drive_delivery.save_client_config(setup_file)
-                drive_delivery.connect()
+                drive_delivery.connect(cancel=cancel)
                 events.put(('drive_connected', None))
+            except drive_delivery.DriveCancelled:
+                events.put(('drive_setup_cancelled', None))
             except drive_delivery.DriveError as exc:
                 events.put(('drive_setup_error', str(exc)))
         threading.Thread(target=worker, daemon=True).start()
@@ -1888,6 +1899,9 @@ def main():
         stop.set()
         cancel_button.configure(state='disabled')
         stop_button.configure(state='disabled')
+        if state.get('operation') == 'drive_connection':
+            status.set('Cancelling the Google Drive connection…')
+            return
         benchmark = creator_benchmark_mode.get() and selected_preset() == 'aistudio'
         frames = frame_benchmark_mode.get() and selected_preset() == 'aistudio'
         direct = selected_preset() == 'aistudio' and direct_gemini_upload.get()
@@ -2197,10 +2211,17 @@ def main():
                              if state['drive_pending'][0] is not None else
                              'Google Drive delivery did not complete.'), parent=root)
                 elif kind == 'drive_connected':
+                    state['operation'] = None
                     busy(False)
                     show_gemini_prompt()
                     status.set('Google Drive connected. VideoTool will keep this connection for future runs.')
+                elif kind == 'drive_setup_cancelled':
+                    state['operation'] = None
+                    busy(False)
+                    show_gemini_prompt()
+                    status.set('Google Drive connection cancelled. You can try again at any time.')
                 elif kind == 'drive_setup_error':
+                    state['operation'] = None
                     busy(False)
                     show_gemini_prompt()
                     status.set('Google Drive connection did not complete.')
@@ -2224,7 +2245,10 @@ def main():
         state['poll_timer'] = root.after(100, poll)
 
     def close():
-        if state['busy']:
+        if state.get('operation') == 'drive_connection':
+            cancel.set()
+            root.destroy()
+        elif state['busy']:
             messagebox.showinfo('Work in progress', 'Wait for the operation to finish, stop after the current file, or cancel the current conversion.', parent=root)
         else:
             root.destroy()

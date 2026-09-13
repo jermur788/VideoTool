@@ -1,5 +1,16 @@
 Test results — VideoTool
 
+## Cancellable Google Drive sign-in — 2026-09-13
+
+- Version 0.12.1 keeps the desktop responsive while Google sign-in is open.
+  **Cancel Google Drive connection** now stops the local sign-in listener promptly,
+  and closing VideoTool during sign-in closes it immediately.
+- Google sign-in now times out after five minutes instead of leaving the app busy
+  indefinitely after an abandoned or rejected browser sign-in.
+- Automated tests cover a successful browser callback and cancellation while the
+  browser is open without using a live Google account.
+- The complete suite passed: 140 tests, including all seven desktop-window checks.
+
 ## Native Google Drive delivery — 2026-09-13
 
 - Version 0.12.0 adds a one-time installed-desktop Google OAuth connection using

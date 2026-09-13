@@ -85,6 +85,10 @@ ID. Failed Drive delivery can be retried from the current result or by choosing 
 existing local response after restarting, without uploading the video or running
 Gemini again.
 
+Version 0.12.1 makes the Google Drive connection step cancellable and applies a
+five-minute limit while waiting for the browser. Closing VideoTool during that
+sign-in step closes immediately instead of showing conversion controls.
+
 Desktop packaging is also implemented at version 0.7.0: a user-level installer
 adds an application-menu launcher and scalable icon, the About panel reports the
 version and local readiness, updates replace only a recognized managed install,
